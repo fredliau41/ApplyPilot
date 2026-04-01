@@ -112,6 +112,26 @@ def load_search_config() -> dict:
         return {}
     return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
 
+def normalize_queries(raw_queries: list) -> list:
+    """Normalize queries from searches.yaml into a flat list.
+    Supports both flat lists and grouped by tier and local includes/excludes.
+    """
+    normalized = []
+    for item in raw_queries:
+        if "searches" in item:
+            tier = item.get("tier", 0)
+            for sub_item in item["searches"]:
+                if isinstance(sub_item, str):
+                    normalized.append({"query": sub_item, "tier": tier})
+                else:
+                    sub_item_copy = dict(sub_item)
+                    if "tier" not in sub_item_copy:
+                        sub_item_copy["tier"] = tier
+                    normalized.append(sub_item_copy)
+        else:
+            normalized.append(item)
+    return normalized
+
 
 def load_sites_config() -> dict:
     """Load sites.yaml configuration (sites list, manual_ats, blocked, etc.)."""

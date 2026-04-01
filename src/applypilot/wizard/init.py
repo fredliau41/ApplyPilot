@@ -219,11 +219,25 @@ def _setup_searches() -> None:
         f'  - location: "{location}"',
         f"    remote: {str(distance == 0).lower()}",
         "",
+        "include_titles_with: []",
+        "exclude_titles_with: []",
+        "",
         "queries:",
     ]
+    
+    # Group queries by tier
+    tiers = {}
     for i, role in enumerate(roles):
-        lines.append(f'  - query: "{role}"')
-        lines.append(f"    tier: {min(i + 1, 3)}")
+        t = min(i + 1, 3)
+        if t not in tiers:
+            tiers[t] = []
+        tiers[t].append(role)
+        
+    for t in sorted(tiers.keys()):
+        lines.append(f"  - tier: {t}")
+        lines.append("    searches:")
+        for role in tiers[t]:
+            lines.append(f'      - query: "{role}"')
 
     SEARCH_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     console.print(f"[green]Search config saved to {SEARCH_CONFIG_PATH}[/green]")

@@ -975,7 +975,8 @@ def build_scrape_targets(
     if search_cfg is None:
         search_cfg = config.load_search_config()
 
-    queries_cfg = search_cfg.get("queries", [])
+    raw_queries = search_cfg.get("queries", [])
+    queries_cfg = config.normalize_queries(raw_queries)
     queries = [q["query"] for q in queries_cfg]
     locs = search_cfg.get("locations", [])
     default_location = locs[0]["location"] if locs else ""

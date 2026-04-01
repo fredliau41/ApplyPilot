@@ -491,7 +491,8 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
         return {"found": 0, "new": 0, "existing": 0, "queries": 0}
 
     search_cfg = config.load_search_config()
-    queries_cfg = search_cfg.get("queries", [])
+    raw_queries = search_cfg.get("queries", [])
+    queries_cfg = config.normalize_queries(raw_queries)
     accept_locs, reject_locs = _load_location_filter(search_cfg)
 
     # Default to tier 1-2 queries for workday scraping
