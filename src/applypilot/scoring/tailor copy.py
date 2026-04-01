@@ -68,14 +68,7 @@ def _build_tailor_prompt(profile: dict) -> str:
     education = profile.get("experience", {})
     education_level = education.get("education_level", "")
 
-    # Dynamic page constraint
-    max_page_resume = profile.get("max_page_resume")
-    if not max_page_resume and "experience" in profile:
-        max_page_resume = profile["experience"].get("max_page_resume")
-        
-    page_constraint = f"- Must fit {max_page_resume} page(s)." if max_page_resume else ""
-
-    return f"""You are a senior technical recruiter customising my resume for a specific job application that screens 200 resumes daily. make his value impossible to ignore
+    return f"""You are a senior technical recruiter rewriting a resume to get this person an interview.
 
 Take the base resume and job description. Return a tailored resume as a JSON object.
 
@@ -94,7 +87,7 @@ You MAY add 2-3 closely related tools (Kubernetes if Docker, Terraform if AWS, R
 
 TITLE: Match the target role. Keep seniority (Senior/Lead/Staff). Drop company suffixes and team names.
 
-SUMMARY: Rewrite as needed. Lead with the 1-2 skills that matter most for THIS role. Like someone who's done this job.
+SUMMARY: Rewrite from scratch. Lead with the 1-2 skills that matter most for THIS role. Sound like someone who's done this job.
 
 SKILLS: Reorder each category so the job's must-haves appear first.
 
@@ -102,8 +95,12 @@ Reframe EVERY bullet for this role. Same real work, different angle. Every bulle
 
 PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
 
+BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, Designed, Implemented, Reduced, Automated, Deployed, Operated, Optimized). Most relevant first. Max 4 per section.
 
 ## VOICE:
+- Write like a real engineer. Short, direct.
+- GOOD: "Automated financial reporting with Python + API integrations, cut processing time from 10 hours to 2"
+- BAD: "Leveraged cutting-edge AI technologies to drive transformative operational efficiencies"
 - BANNED WORDS (using ANY of these = validation failure — do not use them even once):
   {banned_str}
 - No em dashes. Use commas, periods, or hyphens.
@@ -113,7 +110,7 @@ PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
 - Do NOT change real numbers ({metrics_str})
 - Preserved companies: {companies_str} -- names stay as-is
 - Preserved school: {school}
-{page_constraint}
+- Must fit 1 page.
 
 ## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
 
@@ -409,12 +406,6 @@ def tailor_resume(
         try:
             data = extract_json(raw)
         except ValueError:
-            log.warning(
-                "Tailor attempt %d/%d invalid JSON for job '%s'",
-                attempt + 1,
-                max_retries + 1,
-                job.get("title", "unknown"),
-            )
             avoid_notes.append("Output was not valid JSON. Return ONLY a JSON object, nothing else.")
             continue
 
@@ -423,20 +414,6 @@ def tailor_resume(
         report["validator"] = validation
 
         if not validation["passed"]:
-            log.warning(
-                "Tailor attempt %d/%d failed validation for job '%s': %s",
-                attempt + 1,
-                max_retries + 1,
-                job.get("title", "unknown"),
-                " | ".join(validation["errors"]) if validation.get("errors") else "unknown validation error",
-            )
-            if validation.get("warnings"):
-                log.info(
-                    "Tailor attempt %d warnings for job '%s': %s",
-                    attempt + 1,
-                    job.get("title", "unknown"),
-                    " | ".join(validation["warnings"]),
-                )
             # Only retry if there are hard errors (warnings never block)
             avoid_notes.extend(validation["errors"])
             if attempt < max_retries:

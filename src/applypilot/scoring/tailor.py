@@ -75,13 +75,13 @@ def _build_tailor_prompt(profile: dict) -> str:
         
     page_constraint = f"- Must fit {max_page_resume} page(s)." if max_page_resume else ""
 
-    return f"""You are a senior technical recruiter customising my resume for a specific job application that screens 200 resumes daily. make his value impossible to ignore
+    return f"""You are a senior technical recruiter customising my resume for a specific job application that receives 200 resumes daily. 
 
-Take the base resume and job description. Return a tailored resume as a JSON object.
+Take the base resume and job description. Return a tailored resume as a JSON object.  Make his value impossible to ignore to recruiters.  
 
 ## RECRUITER SCAN (6 seconds):
 1. Title -- matches what they're hiring?
-2. Summary -- 2 sentences proving you've done this work
+2. Summary -- sentences proving you've done this work
 3. First 3 bullets of most recent role -- verbs and outcomes match?
 4. Skills -- must-haves visible immediately?
 
@@ -98,7 +98,7 @@ SUMMARY: Rewrite as needed. Lead with the 1-2 skills that matter most for THIS r
 
 SKILLS: Reorder each category so the job's must-haves appear first.
 
-Reframe EVERY bullet for this role. Same real work, different angle. Every bullet must be reworded. Never copy verbatim.
+Reframe or customise bullets as needed for this role. Make sure each point has a measurable achievement. 
 
 PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
 
