@@ -331,6 +331,110 @@ li {{
 </html>"""
 
 
+def _split_cover_letter(text: str) -> tuple[str, list[str], str]:
+    """Split a cover letter into greeting, body paragraphs, and signature.
+
+    Args:
+        text: Raw cover letter text.
+
+    Returns:
+        (greeting, paragraphs, signature)
+    """
+    lines = [line.strip() for line in text.split("\n")]
+    lines = [line for line in lines if line]
+
+    greeting = ""
+    signature = ""
+
+    if lines and lines[0].lower().startswith("dear"):
+        greeting = lines.pop(0)
+
+    if lines and len(lines[-1].split()) <= 4:
+        signature = lines.pop(-1)
+
+    body = "\n".join(lines).strip()
+    if not body:
+        return greeting, [], signature
+
+    paragraphs = [p.strip() for p in body.split("\n\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [body]
+
+    return greeting, paragraphs, signature
+
+
+def build_cover_letter_html(text: str) -> str:
+    """Build polished cover-letter HTML optimized for a one-page letter.
+
+    Args:
+        text: Cover letter text content.
+
+    Returns:
+        Complete HTML string ready for PDF rendering.
+    """
+    greeting, paragraphs, signature = _split_cover_letter(text)
+
+    greeting_html = f'<p class="greeting">{greeting}</p>' if greeting else ""
+    paragraphs_html = "\n".join(f'<p class="paragraph">{p}</p>' for p in paragraphs)
+    signature_html = f'<p class="signature">{signature}</p>' if signature else ""
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset=\"utf-8\">
+<style>
+@page {{
+    size: letter;
+    margin: 0;
+}}
+* {{
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}}
+body {{
+    font-family: 'Garamond', 'Georgia', 'Times New Roman', serif;
+    color: #1f1f1f;
+    background: #ffffff;
+}}
+.page {{
+    width: 100%;
+    min-height: 100vh;
+    padding: 0.95in 0.95in 0.9in;
+}}
+.letter {{
+    max-width: 6.2in;
+    margin: 0 auto;
+}}
+.greeting {{
+    font-size: 12.5pt;
+    line-height: 1.45;
+    margin-bottom: 0.2in;
+}}
+.paragraph {{
+    font-size: 12pt;
+    line-height: 1.55;
+    margin-bottom: 0.16in;
+    text-align: left;
+}}
+.signature {{
+    font-size: 12pt;
+    margin-top: 0.28in;
+}}
+</style>
+</head>
+<body>
+<div class=\"page\">
+    <div class=\"letter\">
+        {greeting_html}
+        {paragraphs_html}
+        {signature_html}
+    </div>
+</div>
+</body>
+</html>"""
+
+
 # ── PDF Renderer ─────────────────────────────────────────────────────────
 
 def render_pdf(html: str, output_path: str) -> None:
@@ -373,8 +477,13 @@ def convert_to_pdf(
     """
     text_path = Path(text_path)
     text = text_path.read_text(encoding="utf-8")
-    resume = parse_resume(text)
-    html = build_html(resume)
+
+    # Cover letters use a dedicated template for polished one-page readability.
+    if text_path.name.endswith("_CL.txt"):
+        html = build_cover_letter_html(text)
+    else:
+        resume = parse_resume(text)
+        html = build_html(resume)
 
     if html_only:
         out = output_path or text_path.with_suffix(".html")
