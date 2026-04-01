@@ -51,6 +51,9 @@ applypilot doctor
 applypilot run
 applypilot run --help
 applypilot run discovery --workers 8 
+applypilot run score --workers 8 
+applypilot run tailor --workers 4
+
 # …etc.
 ```
 

@@ -406,6 +406,12 @@ def tailor_resume(
         try:
             data = extract_json(raw)
         except ValueError:
+            log.warning(
+                "Tailor attempt %d/%d invalid JSON for job '%s'",
+                attempt + 1,
+                max_retries + 1,
+                job.get("title", "unknown"),
+            )
             avoid_notes.append("Output was not valid JSON. Return ONLY a JSON object, nothing else.")
             continue
 
@@ -414,6 +420,20 @@ def tailor_resume(
         report["validator"] = validation
 
         if not validation["passed"]:
+            log.warning(
+                "Tailor attempt %d/%d failed validation for job '%s': %s",
+                attempt + 1,
+                max_retries + 1,
+                job.get("title", "unknown"),
+                " | ".join(validation["errors"]) if validation.get("errors") else "unknown validation error",
+            )
+            if validation.get("warnings"):
+                log.info(
+                    "Tailor attempt %d warnings for job '%s': %s",
+                    attempt + 1,
+                    job.get("title", "unknown"),
+                    " | ".join(validation["warnings"]),
+                )
             # Only retry if there are hard errors (warnings never block)
             avoid_notes.extend(validation["errors"])
             if attempt < max_retries:
