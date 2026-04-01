@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -107,6 +108,7 @@ PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
 - No em dashes. Use commas, periods, or hyphens.
 
 ## HARD RULES:
+- Do not use generic words like: "Passionate"
 - Do NOT change real numbers ({metrics_str})
 - Preserved companies: {companies_str} -- names stay as-is
 - Preserved school: {school}
@@ -476,13 +478,14 @@ def tailor_resume(
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
 def run_tailoring(min_score: int = 7, limit: int = 20,
-                  validation_mode: str = "normal") -> dict:
+                  validation_mode: str = "normal", workers: int = 1) -> dict:
     """Generate tailored resumes for high-scoring jobs.
 
     Args:
         min_score:       Minimum fit_score to tailor for.
         limit:           Maximum jobs to process.
         validation_mode: "strict", "normal", or "lenient".
+        workers:         Number of parallel workers for tailoring generation.
 
     Returns:
         {"approved": int, "failed": int, "errors": int, "elapsed": float}
@@ -498,15 +501,18 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
         return {"approved": 0, "failed": 0, "errors": 0, "elapsed": 0.0}
 
     TAILORED_DIR.mkdir(parents=True, exist_ok=True)
-    log.info("Tailoring resumes for %d jobs (score >= %d)...", len(jobs), min_score)
+    workers = max(1, workers)
+    log.info(
+        "Tailoring resumes for %d jobs (score >= %d, workers=%d)...",
+        len(jobs), min_score, workers,
+    )
     t0 = time.time()
     completed = 0
     results: list[dict] = []
     stats: dict[str, int] = {"approved": 0, "failed_validation": 0, "failed_judge": 0, "error": 0}
     _success_statuses = {"approved", "approved_with_judge_warning"}
 
-    for job in jobs:
-        completed += 1
+    def _process_job(job: dict) -> dict:
         try:
             tailored, report = tailor_resume(resume_text, job, profile,
                                              validation_mode=validation_mode)
@@ -546,7 +552,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
                 except Exception:
                     log.debug("PDF generation failed for %s", txt_path, exc_info=True)
 
-            result = {
+            return {
                 "url": job["url"],
                 "path": str(txt_path),
                 "pdf_path": pdf_path,
@@ -556,11 +562,22 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
                 "attempts": report["attempts"],
             }
         except Exception as e:
-            result = {
+            return {
                 "url": job["url"], "title": job["title"], "site": job["site"],
                 "status": "error", "attempts": 0, "path": None, "pdf_path": None,
             }
-            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
+
+    if workers == 1:
+        result_iter = (_process_job(job) for job in jobs)
+    else:
+        pool = ThreadPoolExecutor(max_workers=workers)
+        futures = [pool.submit(_process_job, job) for job in jobs]
+        result_iter = (future.result() for future in as_completed(futures))
+
+    for result in result_iter:
+        completed += 1
+        if result["status"] == "error":
+            log.error("%d/%d [ERROR] %s", completed, len(jobs), result["title"][:40])
 
         results.append(result)
         stats[result.get("status", "error")] = stats.get(result.get("status", "error"), 0) + 1
@@ -590,6 +607,9 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             rate * 60,
             result["title"][:40],
         )
+
+    if workers > 1:
+        pool.shutdown(wait=True)
 
     elapsed = time.time() - t0
     log.info(

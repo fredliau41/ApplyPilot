@@ -21,12 +21,20 @@ log = logging.getLogger(__name__)
 
 BANNED_WORDS: list[str] = [
     "dedicated", "committed to", "passionate",
-    "robust", "demonstrated ability",
-    "detail-oriented", "highly motivated",
+    "utilizing", "utilize", "harnessing",
+    "spearheaded", "spearhead", "orchestrated", "championed", "pioneered",
+    "robust", "scalable solutions", "cutting-edge", "state-of-the-art", "best-in-class",
+    "proven track record", "track record of success", "demonstrated ability",
+    "strong communicator", "team player", "fast learner", "self-starter", "go-getter",
+    "synergy", "cross-functional collaboration", "holistic",
+    "transformative", "innovative solutions", "paradigm", "ecosystem",
+    "proactive", "detail-oriented", "highly motivated",
+    "seamless", "full lifecycle",
     "deep understanding", "extensive experience", "comprehensive knowledge",
     "thrives in", "excels at", "adept at", "well-versed in",
     "i am confident", "i believe", "i am excited",
-    "strong track record"
+    "plays a critical role", "instrumental in", "integral part of",
+    "strong track record", "eager to", "eager",
     # Cover-letter-specific additions
     "this demonstrates", "this reflects", "i have experience with",
     "furthermore", "additionally", "moreover",

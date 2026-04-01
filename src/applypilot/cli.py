@@ -84,12 +84,13 @@ def run(
         ),
     ),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for tailor/cover stages."),
-    tailor_limit: int = typer.Option(
+    limit: int = typer.Option(
         20,
-        "--tailor-limit",
-        help="Maximum number of jobs to process in the tailor stage per run.",
+        "--limit",
+        "-l",
+        help="Maximum number of jobs to process for tailor/cover stages per run.",
     ),
-    workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discovery/enrichment stages."),
+    workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discover/enrich/tailor/cover stages."),
     stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
     validation: str = typer.Option(
@@ -134,8 +135,8 @@ def run(
         )
         raise typer.Exit(code=1)
 
-    if tailor_limit < 1:
-        console.print("[red]Invalid --tailor-limit value:[/red] must be >= 1")
+    if limit < 1:
+        console.print("[red]Invalid --limit value:[/red] must be >= 1")
         raise typer.Exit(code=1)
 
     result = run_pipeline(
@@ -145,7 +146,7 @@ def run(
         stream=stream,
         workers=workers,
         validation_mode=validation,
-        tailor_limit=tailor_limit,
+        stage_limit=limit,
     )
 
     if result.get("errors"):

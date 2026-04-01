@@ -54,6 +54,10 @@ applypilot run discovery --workers 8
 applypilot run score --workers 8 
 applypilot run tailor --workers 4
 applypilot run tailor --tailor-limit 100 --validation lenient
+applypilot run tailor cover -w 4 --limit 100 --validation lenient
+applypilot run  cover -w 4 --limit 4 --validation lenient
+applypilot run  cover  --limit 1 --validation lenient
+
 
 # …etc.
 ```
