@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
+from applypilot.scoring.naming import build_job_file_prefix, job_source_url
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
@@ -517,10 +518,8 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             tailored, report = tailor_resume(resume_text, job, profile,
                                              validation_mode=validation_mode)
 
-            # Build safe filename prefix
-            safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
-            safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            # Build a collision-resistant filename prefix.
+            prefix = build_job_file_prefix(job)
 
             # Save tailored resume text
             txt_path = TAILORED_DIR / f"{prefix}.txt"
@@ -540,7 +539,14 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
 
             # Save validation report
             report_path = TAILORED_DIR / f"{prefix}_REPORT.json"
-            report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            report_data = {
+                **report,
+                "job_url": job.get("url"),
+                "application_url": job.get("application_url"),
+                "source_url": job_source_url(job),
+                "file_prefix": prefix,
+            }
+            report_path.write_text(json.dumps(report_data, indent=2), encoding="utf-8")
 
             # Generate PDF for approved resumes (best-effort)
             # "approved_with_judge_warning" is also a success — resume was generated.

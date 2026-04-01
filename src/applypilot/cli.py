@@ -334,6 +334,36 @@ def status() -> None:
 
 
 @app.command()
+def update_db(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview the database sync without writing changes."),
+) -> None:
+    """Reconcile tailored resume and cover letter files with the jobs table."""
+    _bootstrap()
+
+    from applypilot.db_sync import reconcile_file_backed_artifacts
+
+    result = reconcile_file_backed_artifacts(dry_run=dry_run)
+
+    console.print("\n[bold]ApplyPilot DB Sync[/bold]\n")
+    report = Table(title="Reconciliation Summary", show_header=True, header_style="bold cyan")
+    report.add_column("Metric")
+    report.add_column("Count", justify="right")
+
+    report.add_row("Rows updated", str(result["rows_updated"]))
+    report.add_row("Tailored refreshed", str(result["tailored_refreshed"]))
+    report.add_row("Tailored cleared", str(result["tailored_cleared"]))
+    report.add_row("Cover refreshed", str(result["cover_refreshed"]))
+    report.add_row("Cover cleared", str(result["cover_cleared"]))
+    report.add_row("Unmatched tailored files", str(result["tailored_unmatched_files"]))
+    report.add_row("Unmatched cover files", str(result["cover_unmatched_files"]))
+
+    console.print(report)
+    if dry_run:
+        console.print("[yellow]Dry run only. No database changes were written.[/yellow]")
+    console.print()
+
+
+@app.command()
 def dashboard() -> None:
     """Generate and open the HTML dashboard in your browser."""
     _bootstrap()
