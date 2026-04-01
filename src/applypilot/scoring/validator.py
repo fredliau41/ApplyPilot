@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 # ── Universal Constants (not personal data) ───────────────────────────────
 
 BANNED_WORDS: list[str] = [
-    "passionate", "dedicated", "committed to",
+    "dedicated", "committed to",
     "utilizing", "utilize", "harnessing",
     "spearheaded", "spearhead", "orchestrated", "championed", "pioneered",
     "robust", "scalable solutions", "cutting-edge", "state-of-the-art", "best-in-class",

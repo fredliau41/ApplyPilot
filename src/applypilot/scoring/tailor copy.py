@@ -104,9 +104,12 @@ PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
 
 
 ## VOICE:
+- BANNED WORDS (using ANY of these = validation failure — do not use them even once):
+  {banned_str}
 - No em dashes. Use commas, periods, or hyphens.
 
 ## HARD RULES:
+- Do NOT invent work, companies, degrees, or certifications
 - Do NOT change real numbers ({metrics_str})
 - Preserved companies: {companies_str} -- names stay as-is
 - Preserved school: {school}
