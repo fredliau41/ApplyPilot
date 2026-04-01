@@ -278,3 +278,26 @@ def check_tier(required: int, feature: str) -> None:
             _console.print(f"  - {m}")
     _console.print()
     raise SystemExit(1)
+
+def title_matches(title: str | None, includes: list[str], excludes: list[str]) -> bool:
+    """Check if a job title passes include/exclude rules (case-insensitive partial match).
+    
+    If includes is empty, the title passes the include check.
+    If it has elements, the title must contain at least one to pass.
+    If excludes has elements and the title contains any, it fails.
+    """
+    if not title or str(title) == "nan":
+        return not bool(includes)
+
+    t = str(title).lower()
+    
+    inc = [str(x).lower() for x in includes if x]
+    exc = [str(x).lower() for x in excludes if x]
+    
+    if inc and not any(i in t for i in inc):
+        return False
+        
+    if exc and any(e in t for e in exc):
+        return False
+        
+    return True

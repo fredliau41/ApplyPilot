@@ -92,8 +92,10 @@ def _store_jobs_filtered(
     strategy: str,
     accept_locs: list[str],
     reject_locs: list[str],
+    title_includes: list[str] | None = None,
+    title_excludes: list[str] | None = None,
 ) -> tuple[int, int]:
-    """Store jobs with location filtering. Returns (new, existing)."""
+    """Store jobs with location and title filtering. Returns (new, existing)."""
     now = datetime.now(timezone.utc).isoformat()
     new = 0
     existing = 0
@@ -103,9 +105,15 @@ def _store_jobs_filtered(
         url = job.get("url")
         if not url:
             continue
+        
         if not _location_ok(job.get("location"), accept_locs, reject_locs):
             filtered += 1
             continue
+            
+        if not config.title_matches(job.get("title"), title_includes or [], title_excludes or []):
+            filtered += 1
+            continue
+
         try:
             conn.execute(
                 "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at) "
@@ -977,9 +985,13 @@ def build_scrape_targets(
 
     raw_queries = search_cfg.get("queries", [])
     queries_cfg = config.normalize_queries(raw_queries)
-    queries = [q["query"] for q in queries_cfg]
     locs = search_cfg.get("locations", [])
     default_location = locs[0]["location"] if locs else ""
+
+    global_includes = search_cfg.get("include_titles_with", []) or []
+    global_excludes = search_cfg.get("exclude_titles_with", []) or []
+    if "exclude_titles" in search_cfg:
+        global_excludes.extend(search_cfg["exclude_titles"] or [])
 
     targets: list[dict] = []
 
@@ -988,8 +1000,13 @@ def build_scrape_targets(
         site_name = site.get("name", "Unknown")
         site_type = site.get("type", "static")
 
-        if site_type == "search" and queries:
-            for query in queries:
+        if site_type == "search" and queries_cfg:
+            for q in queries_cfg:
+                query = q["query"]
+                
+                local_inc = global_includes + (q.get("include_titles_with", []) or [])
+                local_exc = global_excludes + (q.get("exclude_titles_with", []) or [])
+                
                 expanded_url = site_url
                 expanded_url = expanded_url.replace("{query_encoded}", quote_plus(query))
                 expanded_url = expanded_url.replace("{query}", quote_plus(query))
@@ -998,6 +1015,8 @@ def build_scrape_targets(
                     "name": site_name,
                     "url": expanded_url,
                     "query": query,
+                    "title_includes": local_inc,
+                    "title_excludes": local_exc,
                 })
         else:
             expanded_url = site_url
@@ -1006,6 +1025,8 @@ def build_scrape_targets(
                 "name": site_name,
                 "url": expanded_url,
                 "query": None,
+                "title_includes": global_includes,
+                "title_excludes": global_excludes,
             })
 
     return targets
@@ -1037,9 +1058,12 @@ def _run_all(
         nonlocal total_new, total_existing
         jobs = r.get("jobs", [])
         if jobs:
+            t_inc = target.get("title_includes", [])
+            t_exc = target.get("title_excludes", [])
             new, existing = _store_jobs_filtered(conn, jobs, target["name"],
                                                   r.get("strategy", "?"),
-                                                  accept_locs, reject_locs)
+                                                  accept_locs, reject_locs,
+                                                  t_inc, t_exc)
             total_new += new
             total_existing += existing
             log.info("DB: +%d new, %d already existed", new, existing)

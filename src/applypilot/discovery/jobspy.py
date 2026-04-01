@@ -270,31 +270,16 @@ def _run_one_search(
         log.info("[%s] 0 results", label)
         return {"new": 0, "existing": 0, "errors": 0, "filtered": 0, "total": 0, "label": label}
 
-    def _title_ok(title_val: str | float | None) -> bool:
-        if not title_val or str(title_val) == "nan":
-            return True
-        t = str(title_val).lower()
-        
-        l_inc = search.get("include_titles_with", []) or []
-        l_exc = search.get("exclude_titles_with", []) or []
-        
-        inc = [str(x).lower() for x in (global_includes + l_inc) if x]
-        exc = [str(x).lower() for x in (global_excludes + l_exc) if x]
-        
-        if inc and not any(i in t for i in inc):
-            return False
-            
-        if exc and any(e in t for e in exc):
-            return False
-            
-        return True
-
     # Filter by location and title before storing
     before = len(df)
     df = df[df.apply(lambda row: _location_ok(
         str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None,
         accept_locs, reject_locs,
-    ) and _title_ok(row.get("title")), axis=1)]
+    ) and config.title_matches(
+        row.get("title"),
+        global_includes + (search.get("include_titles_with", []) or []),
+        global_excludes + (search.get("exclude_titles_with", []) or [])
+    ), axis=1)]
     filtered = before - len(df)
 
     conn = get_connection()
