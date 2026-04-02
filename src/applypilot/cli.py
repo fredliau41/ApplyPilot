@@ -374,6 +374,73 @@ def dashboard() -> None:
 
 
 @app.command()
+def reprint(
+    target: str = typer.Option("cover", "--target", "-t", help="What to reprint: 'cover', 'resume', or 'all'"),
+    workers: int = typer.Option(4, "--workers", "-w", help="Number of parallel PDF renderers."),
+) -> None:
+    """Reprint PDFs from existing generated text files using current HTML templates."""
+    _bootstrap()
+    from pathlib import Path
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from applypilot.database import get_connection
+    from applypilot.config import load_profile
+    from applypilot.scoring.pdf import convert_to_pdf
+
+    if target not in ("cover", "resume", "all"):
+        console.print(f"[red]Invalid target:[/red] '{target}'. Must be 'cover', 'resume', or 'all'.")
+        raise typer.Exit(code=1)
+
+    profile = load_profile()
+    conn = get_connection()
+    
+    jobs = conn.execute("SELECT * FROM jobs").fetchall()
+    jobs_dict = [dict(row) for row in jobs]
+
+    tasks = []
+    for job in jobs_dict:
+        if target in ("cover", "all") and job.get("cover_letter_path"):
+            path = Path(job["cover_letter_path"])
+            if path.exists():
+                tasks.append((path, job))
+                
+        if target in ("resume", "all") and job.get("tailored_resume_path"):
+            path = Path(job["tailored_resume_path"])
+            if path.exists():
+                tasks.append((path, job))
+
+    if not tasks:
+        console.print(f"[yellow]No {target} text files found to reprint.[/yellow]")
+        return
+
+    console.print(f"[bold blue]Reprinting {len(tasks)} PDFs ({target})...[/bold blue]")
+
+    successful = 0
+    errors = 0
+
+    def _render(args):
+        p, j = args
+        try:
+            convert_to_pdf(p, profile=profile, job=j)
+            return True, p
+        except Exception as e:
+            return False, (p, str(e))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_render, task) for task in tasks]
+        for future in as_completed(futures):
+            success, result = future.result()
+            if success:
+                successful += 1
+            else:
+                errors += 1
+                log.error("Failed to render %s: %s", result[0], result[1])
+
+    console.print(f"\n[green]Successfully reprinted {successful} PDFs.[/green]")
+    if errors > 0:
+        console.print(f"[red]Encountered {errors} errors.[/red]")
+
+
+@app.command()
 def doctor() -> None:
     """Check your setup and diagnose missing requirements."""
     import shutil

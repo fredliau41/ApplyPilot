@@ -59,6 +59,13 @@ applypilot run  cover -w 4 --limit 4 --validation lenient
 applypilot run  cover  --limit 1 --validation lenient
 
 
+applypilot reprint --target cover --workers 4
+applypilot reprint --target resume
+applypilot reprint --target all
+
+applypilot apply --workers 3 --dry-run  --limit 12
+applypilot apply --workers 1 --dry-run  --limit 1
+
 # …etc.
 ```
 
