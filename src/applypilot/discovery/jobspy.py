@@ -168,10 +168,10 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
 
         try:
             conn.execute(
-                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at, "
+                "INSERT INTO jobs (url, title, salary, description, location, company, site, strategy, discovered_at, "
                 "full_description, application_url, detail_scraped_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (url, title, salary, description, location_str, site_label, strategy, now,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (url, title, salary, description, location_str, company, site_label, strategy, now,
                  full_description, apply_url, detail_scraped_at),
             )
             new += 1
@@ -195,6 +195,8 @@ def _run_one_search(
     accept_locs: list[str],
     reject_locs: list[str],
     glassdoor_map: dict,
+    global_includes: list[str],
+    global_excludes: list[str],
 ) -> dict:
     """Run a single search query and store results in DB."""
     s = search
@@ -268,11 +270,15 @@ def _run_one_search(
         log.info("[%s] 0 results", label)
         return {"new": 0, "existing": 0, "errors": 0, "filtered": 0, "total": 0, "label": label}
 
-    # Filter by location before storing
+    # Filter by location and title before storing
     before = len(df)
     df = df[df.apply(lambda row: _location_ok(
         str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None,
         accept_locs, reject_locs,
+    ) and config.title_matches(
+        row.get("title"),
+        global_includes + (search.get("include_titles_with", []) or []),
+        global_excludes + (search.get("exclude_titles_with", []) or [])
     ), axis=1)]
     filtered = before - len(df)
 
@@ -281,7 +287,7 @@ def _run_one_search(
 
     msg = f"[{label}] {before} results -> {new} new, {existing} dupes"
     if filtered:
-        msg += f", {filtered} filtered (location)"
+        msg += f", {filtered} filtered (location/title)"
     log.info(msg)
 
     return {"new": new, "existing": existing, "errors": 0, "filtered": filtered, "total": before, "label": label}
@@ -372,11 +378,18 @@ def _full_crawl(
         sites = ["indeed", "linkedin", "zip_recruiter"]
 
     # Build search combinations from config
-    queries = search_cfg.get("queries", [])
+    raw_queries = search_cfg.get("queries", [])
+    queries = config.normalize_queries(raw_queries)
+
     locs = search_cfg.get("locations", [])
     defaults = search_cfg.get("defaults", {})
     glassdoor_map = search_cfg.get("glassdoor_location_map", {})
     accept_locs, reject_locs = _load_location_config(search_cfg)
+    
+    global_includes = search_cfg.get("include_titles_with", []) or []
+    global_excludes = search_cfg.get("exclude_titles_with", []) or []
+    if "exclude_titles" in search_cfg:
+        global_excludes.extend(search_cfg["exclude_titles"] or [])
 
     if tiers:
         queries = [q for q in queries if q.get("tier") in tiers]
@@ -386,12 +399,17 @@ def _full_crawl(
     searches = []
     for q in queries:
         for loc in locs:
-            searches.append({
+            search_item = {
                 "query": q["query"],
                 "location": loc["location"],
                 "remote": loc.get("remote", False),
                 "tier": q.get("tier", 0),
-            })
+            }
+            if "include_titles_with" in q:
+                search_item["include_titles_with"] = q["include_titles_with"]
+            if "exclude_titles_with" in q:
+                search_item["exclude_titles_with"] = q["exclude_titles_with"]
+            searches.append(search_item)
 
     proxy_config = parse_proxy(proxy) if proxy else None
 
@@ -412,6 +430,7 @@ def _full_crawl(
             s, sites, results_per_site, hours_old,
             proxy_config, defaults, max_retries,
             accept_locs, reject_locs, glassdoor_map,
+            global_includes, global_excludes,
         )
         completed += 1
         total_new += result["new"]

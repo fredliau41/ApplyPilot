@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Cover Letter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=DM+Serif+Display:ital@1&display=swap" rel="stylesheet">
+<style>
+:root {
+  --accent: #01696f;
+  --text: #1a1a1a;
+  --muted: #666662;
+  --faint: #999994;
+  --placeholder: #c0bfba;
+  --font-body: 'DM Sans', 'Helvetica Neue', sans-serif;
+  --font-sig: 'DM Serif Display', Georgia, serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #e8e6e1;
+  font-family: var(--font-body);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px 64px;
+}
+.toolbar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.toolbar button {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 8px 20px;
+  border-radius: 99px;
+  border: 1.5px solid #ccc;
+  cursor: pointer;
+  background: white;
+  color: var(--text);
+}
+.toolbar button.primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.page {
+  width: 210mm;
+  min-height: 297mm;
+  background: white;
+  padding: 20mm 24mm;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.15);
+  display: flex;
+  flex-direction: column;
+}
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-bottom: 14px;
+  border-bottom: 2px solid var(--accent);
+  margin-bottom: 20px;
+}
+.header-name {
+  font-size: 26pt;
+  font-weight: 500;
+  color: var(--text);
+}
+.header-role {
+  font-size: 12pt;
+  color: var(--accent);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-top: 3px;
+}
+.header-contact {
+  text-align: right;
+  font-size: 12pt;
+  color: var(--muted);
+  line-height: 1.8;
+  font-weight: 300;
+}
+.ph {
+  color: var(--placeholder);
+  font-style: italic;
+}
+.meta {
+  font-size: 13pt;
+  color: var(--text);
+  line-height: 1.8;
+  margin-bottom: 22px;
+}
+.meta .date {
+  color: var(--faint);
+  margin-bottom: 10px;
+  font-size: 12pt;
+}
+.salutation {
+  font-size: 14pt;
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+.body-placeholder {
+  flex: 1;
+  font-size: 14pt;
+  font-weight: 300;
+  color: var(--placeholder);
+  font-style: italic;
+  line-height: 1.75;
+  margin-bottom: 13px;
+  border: 1.5px dashed #ddddd8;
+  border-radius: 6px;
+  padding: 16px;
+  min-height: 320px;
+  outline: none;
+}
+.closing-fixed {
+  font-size: 14pt;
+  font-weight: 300;
+  color: var(--text);
+  line-height: 1.75;
+  margin-bottom: 18px;
+}
+.sign-off {
+  font-size: 14pt;
+  color: var(--muted);
+  font-weight: 300;
+  margin-bottom: 8px;
+}
+.sig-name {
+  font-family: var(--font-sig);
+  font-size: 26pt;
+  font-style: italic;
+  color: var(--text);
+  line-height: 1;
+}
+.sig-sub {
+  font-size: 12pt;
+  color: var(--faint);
+  margin-top: 5px;
+  font-weight: 300;
+}
+.meta .date {
+  color: var(--faint);
+  margin-bottom: 10px;
+  font-size: 10pt;
+}
+.salutation {
+  font-size: 12pt;
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+.body-placeholder {
+  flex: 1;
+  font-size: 13pt;
+  font-weight: 300;
+  color: var(--placeholder);
+  font-style: italic;
+  line-height: 1.75;
+  margin-bottom: 13px;
+  border: 1.5px dashed #ddddd8;
+  border-radius: 6px;
+  padding: 16px;
+  min-height: 280px;
+  outline: none;
+}
+.closing-fixed {
+  font-size: 12pt;
+  font-weight: 300;
+  color: var(--text);
+  line-height: 1.75;
+  margin-bottom: 18px;
+}
+.sign-off {
+  font-size: 12pt;
+  color: var(--muted);
+  font-weight: 300;
+  margin-bottom: 8px;
+}
+.sig-name {
+  font-family: var(--font-sig);
+  font-size: 22pt;
+  font-style: italic;
+  color: var(--text);
+  line-height: 1;
+}
+.sig-sub {
+  font-size: 10pt;
+  color: var(--faint);
+  margin-top: 5px;
+  font-weight: 300;
+}
+@media print {
+  body { background: none; padding: 0; }
+  .toolbar { display: none; }
+  .page { box-shadow: none; padding: 15mm 18mm; }
+  .body-placeholder { border: none; padding: 0; color: var(--text); font-style: normal; }
+  @page { size: A4; margin: 0; }
+}
+</style>
+</head>
+<body>
+
+
+
+<div class="page">
+  <div class="header">
+    <div>
+      <div class="header-name" contenteditable="true"><span class="ph">Your Name</span></div>
+      <div class="header-role" contenteditable="true"><span class="ph">Role · University · Location</span></div>
+    </div>
+    <div class="header-contact" contenteditable="true">
+      <span class="ph">your.email@example.com</span><br>
+      <span class="ph">+XX XXXX XXXX</span><br>
+      <span class="ph">{linkedin link}</span>
+    </div>
+  </div>
+
+  <div class="meta">
+
+    <div contenteditable="true"><span class="ph">Role Title · Company Name</span></div>
+  </div>
+
+  <div class="body-placeholder" contenteditable="true"<span class="ph">{}content</span>,</div>
+
+
+
+
+</div>
+
+</body>
+</html>

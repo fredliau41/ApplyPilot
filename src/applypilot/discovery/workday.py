@@ -326,11 +326,11 @@ def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -
 
         try:
             conn.execute(
-                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, "
+                "INSERT INTO jobs (url, title, salary, description, location, company, site, strategy, "
                 "discovered_at, full_description, application_url, detail_scraped_at, detail_error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (url, job.get("title"), None, short_desc, job.get("location"),
-                 site, strategy, now, full_description, url, detail_scraped_at, detail_error),
+                 job.get("employer_name"), site, strategy, now, full_description, url, detail_scraped_at, detail_error),
             )
             new += 1
         except sqlite3.IntegrityError:
@@ -347,8 +347,10 @@ def _process_one(
     location_filter: bool,
     accept_locs: list[str],
     reject_locs: list[str],
+    title_includes: list[str] | None = None,
+    title_excludes: list[str] | None = None,
 ) -> dict:
-    """Search one employer, fetch details, store results."""
+    """Search one employer, fetch details, store results w/ filters."""
     emp = employers[employer_key]
 
     try:
@@ -362,6 +364,16 @@ def _process_one(
         log.error("%s: ERROR searching '%s': %s", emp["name"], search_text, e)
         return {"employer": emp["name"], "query": search_text,
                 "found": 0, "new": 0, "existing": 0, "error": str(e)}
+
+    if not jobs:
+        return {"employer": emp["name"], "query": search_text,
+                "found": 0, "new": 0, "existing": 0}
+
+    # Filter out by title before fetching details
+    if title_includes is not None or title_excludes is not None:
+        inc = title_includes or []
+        exc = title_excludes or []
+        jobs = [j for j in jobs if config.title_matches(j.get("title"), inc, exc)]
 
     if not jobs:
         return {"employer": emp["name"], "query": search_text,
@@ -390,6 +402,8 @@ def scrape_employers(
     max_results: int = 0,
     accept_locs: list[str] | None = None,
     reject_locs: list[str] | None = None,
+    title_includes: list[str] | None = None,
+    title_excludes: list[str] | None = None,
     workers: int = 1,
 ) -> dict:
     """Run full scrape: search -> filter -> detail -> store.
@@ -424,6 +438,7 @@ def scrape_employers(
                 pool.submit(
                     _process_one, key, employers, search_text,
                     location_filter, accept_locs, reject_locs,
+                    title_includes, title_excludes,
                 ): key
                 for key in valid_keys
             }
@@ -447,6 +462,7 @@ def scrape_employers(
             result = _process_one(
                 key, employers, search_text,
                 location_filter, accept_locs, reject_locs,
+                title_includes, title_excludes,
             )
             completed += 1
             total_new += result["new"]
@@ -491,20 +507,27 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
         return {"found": 0, "new": 0, "existing": 0, "queries": 0}
 
     search_cfg = config.load_search_config()
-    queries_cfg = search_cfg.get("queries", [])
+    raw_queries = search_cfg.get("queries", [])
+    queries_cfg = config.normalize_queries(raw_queries)
     accept_locs, reject_locs = _load_location_filter(search_cfg)
 
     # Default to tier 1-2 queries for workday scraping
     max_tier = search_cfg.get("workday_max_tier", 2)
-    queries = [q["query"] for q in queries_cfg if q.get("tier", 99) <= max_tier]
+    queries_to_run = [q for q in queries_cfg if q.get("tier", 99) <= max_tier]
 
-    if not queries:
+    if not queries_to_run:
         # Fallback: use all queries
-        queries = [q["query"] for q in queries_cfg]
+        queries_to_run = queries_cfg
 
-    if not queries:
+    if not queries_to_run:
         log.warning("No search queries configured in searches.yaml.")
         return {"found": 0, "new": 0, "existing": 0, "queries": 0}
+
+    # Setup global includes/excludes
+    global_includes = search_cfg.get("include_titles_with", []) or []
+    global_excludes = search_cfg.get("exclude_titles_with", []) or []
+    if "exclude_titles" in search_cfg:
+        global_excludes.extend(search_cfg["exclude_titles"] or [])
 
     proxy = search_cfg.get("proxy")
     if proxy:
@@ -512,20 +535,26 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
 
     location_filter = search_cfg.get("workday_location_filter", True)
 
-    log.info("Workday crawl: %d queries x %d employers (workers=%d)", len(queries), len(employers), workers)
+    log.info("Workday crawl: %d queries x %d employers (workers=%d)", len(queries_to_run), len(employers), workers)
 
     grand_new = 0
     grand_existing = 0
     grand_found = 0
 
-    for i, query in enumerate(queries, 1):
-        log.info("Query %d/%d: \"%s\"", i, len(queries), query)
+    for i, q in enumerate(queries_to_run, 1):
+        query = q["query"]
+        local_inc = global_includes + (q.get("include_titles_with", []) or [])
+        local_exc = global_excludes + (q.get("exclude_titles_with", []) or [])
+
+        log.info("Query %d/%d: \"%s\"", i, len(queries_to_run), query)
         result = scrape_employers(
             search_text=query,
             employers=employers,
             location_filter=location_filter,
             accept_locs=accept_locs,
             reject_locs=reject_locs,
+            title_includes=local_inc,
+            title_excludes=local_exc,
             workers=workers,
         )
         grand_new += result["new"]
@@ -533,11 +562,11 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
         grand_found += result["found"]
 
     log.info("Workday crawl done: %d found, %d new, %d existing across %d queries x %d employers",
-             grand_found, grand_new, grand_existing, len(queries), len(employers))
+             grand_found, grand_new, grand_existing, len(queries_to_run), len(employers))
 
     return {
         "found": grand_found,
         "new": grand_new,
         "existing": grand_existing,
-        "queries": len(queries),
+        "queries": len(queries_to_run),
     }

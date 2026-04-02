@@ -84,7 +84,13 @@ def run(
         ),
     ),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for tailor/cover stages."),
-    workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discovery/enrichment stages."),
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        "-l",
+        help="Maximum number of jobs to process for tailor/cover stages per run.",
+    ),
+    workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discover/enrich/tailor/cover stages."),
     stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
     validation: str = typer.Option(
@@ -129,6 +135,10 @@ def run(
         )
         raise typer.Exit(code=1)
 
+    if limit < 1:
+        console.print("[red]Invalid --limit value:[/red] must be >= 1")
+        raise typer.Exit(code=1)
+
     result = run_pipeline(
         stages=stage_list,
         min_score=min_score,
@@ -136,6 +146,7 @@ def run(
         stream=stream,
         workers=workers,
         validation_mode=validation,
+        stage_limit=limit,
     )
 
     if result.get("errors"):
@@ -323,6 +334,36 @@ def status() -> None:
 
 
 @app.command()
+def update_db(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview the database sync without writing changes."),
+) -> None:
+    """Reconcile tailored resume and cover letter files with the jobs table."""
+    _bootstrap()
+
+    from applypilot.db_sync import reconcile_file_backed_artifacts
+
+    result = reconcile_file_backed_artifacts(dry_run=dry_run)
+
+    console.print("\n[bold]ApplyPilot DB Sync[/bold]\n")
+    report = Table(title="Reconciliation Summary", show_header=True, header_style="bold cyan")
+    report.add_column("Metric")
+    report.add_column("Count", justify="right")
+
+    report.add_row("Rows updated", str(result["rows_updated"]))
+    report.add_row("Tailored refreshed", str(result["tailored_refreshed"]))
+    report.add_row("Tailored cleared", str(result["tailored_cleared"]))
+    report.add_row("Cover refreshed", str(result["cover_refreshed"]))
+    report.add_row("Cover cleared", str(result["cover_cleared"]))
+    report.add_row("Unmatched tailored files", str(result["tailored_unmatched_files"]))
+    report.add_row("Unmatched cover files", str(result["cover_unmatched_files"]))
+
+    console.print(report)
+    if dry_run:
+        console.print("[yellow]Dry run only. No database changes were written.[/yellow]")
+    console.print()
+
+
+@app.command()
 def dashboard() -> None:
     """Generate and open the HTML dashboard in your browser."""
     _bootstrap()
@@ -330,6 +371,73 @@ def dashboard() -> None:
     from applypilot.view import open_dashboard
 
     open_dashboard()
+
+
+@app.command()
+def reprint(
+    target: str = typer.Option("cover", "--target", "-t", help="What to reprint: 'cover', 'resume', or 'all'"),
+    workers: int = typer.Option(4, "--workers", "-w", help="Number of parallel PDF renderers."),
+) -> None:
+    """Reprint PDFs from existing generated text files using current HTML templates."""
+    _bootstrap()
+    from pathlib import Path
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from applypilot.database import get_connection
+    from applypilot.config import load_profile
+    from applypilot.scoring.pdf import convert_to_pdf
+
+    if target not in ("cover", "resume", "all"):
+        console.print(f"[red]Invalid target:[/red] '{target}'. Must be 'cover', 'resume', or 'all'.")
+        raise typer.Exit(code=1)
+
+    profile = load_profile()
+    conn = get_connection()
+    
+    jobs = conn.execute("SELECT * FROM jobs").fetchall()
+    jobs_dict = [dict(row) for row in jobs]
+
+    tasks = []
+    for job in jobs_dict:
+        if target in ("cover", "all") and job.get("cover_letter_path"):
+            path = Path(job["cover_letter_path"])
+            if path.exists():
+                tasks.append((path, job))
+                
+        if target in ("resume", "all") and job.get("tailored_resume_path"):
+            path = Path(job["tailored_resume_path"])
+            if path.exists():
+                tasks.append((path, job))
+
+    if not tasks:
+        console.print(f"[yellow]No {target} text files found to reprint.[/yellow]")
+        return
+
+    console.print(f"[bold blue]Reprinting {len(tasks)} PDFs ({target})...[/bold blue]")
+
+    successful = 0
+    errors = 0
+
+    def _render(args):
+        p, j = args
+        try:
+            convert_to_pdf(p, profile=profile, job=j)
+            return True, p
+        except Exception as e:
+            return False, (p, str(e))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_render, task) for task in tasks]
+        for future in as_completed(futures):
+            success, result = future.result()
+            if success:
+                successful += 1
+            else:
+                errors += 1
+                log.error("Failed to render %s: %s", result[0], result[1])
+
+    console.print(f"\n[green]Successfully reprinted {successful} PDFs.[/green]")
+    if errors > 0:
+        console.print(f"[red]Encountered {errors} errors.[/red]")
 
 
 @app.command()
