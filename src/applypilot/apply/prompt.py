@@ -230,38 +230,28 @@ If CAPTCHA is detected:
 Keep this flow short. CAPTCHA is a rare fallback path, not the default workflow."""
 
 
-def build_prompt(job: dict, tailored_resume: str,
-                 cover_letter: str | None = None,
-                 dry_run: bool = False) -> str:
-    """Build the full instruction prompt for the apply agent.
 
-    Loads the user profile and search config internally. All personal data
-    comes from the profile -- nothing is hardcoded.
-
-    Args:
-        job: Job dict from the database (must have url, title, site,
-             application_url, fit_score, tailored_resume_path).
-        tailored_resume: Plain-text content of the tailored resume.
-        cover_letter: Optional plain-text cover letter content.
-        dry_run: If True, tell the agent not to click Submit.
-
-    Returns:
-        Complete prompt string for the AI agent.
+def build_prompt_browser_use(job: dict, dry_run: bool = False) -> tuple[str, str | None, str | None]:
     """
+    Build simplified prompt for browser-use. 
+    Returns (instruction_string, resume_pdf_path, cover_letter_pdf_path)
+    """
+    from pathlib import Path
+    import shutil
+    from applypilot import config
+    
     profile = config.load_profile()
     search_config = config.load_search_config()
     personal = profile["personal"]
-
-    # --- Resolve resume PDF path ---
+    
     resume_path = job.get("tailored_resume_path")
     if not resume_path:
-        raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
-
+        raise ValueError(f"No resume for job: {job.get('title', 'unknown')}")
+        
     src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
     if not src_pdf.exists():
         raise ValueError(f"Resume PDF not found: {src_pdf}")
-
-    # Copy to a clean filename for upload (recruiters see the filename)
+        
     full_name = personal["full_name"]
     name_slug = full_name.replace(" ", "_")
     dest_dir = config.APPLY_WORKER_DIR / "current"
@@ -269,138 +259,168 @@ def build_prompt(job: dict, tailored_resume: str,
     upload_pdf = dest_dir / f"{name_slug}_Resume.pdf"
     shutil.copy(str(src_pdf), str(upload_pdf))
     pdf_path = str(upload_pdf)
-
-    # --- Cover letter handling ---
-    cover_letter_text = cover_letter or ""
-    cl_upload_path = ""
+    
+    cl_upload_path = None
     cl_path = job.get("cover_letter_path")
     if cl_path and Path(cl_path).exists():
         cl_src = Path(cl_path)
-        # Read text from .txt sibling (PDF is binary)
-        cl_txt = cl_src.with_suffix(".txt")
-        if cl_txt.exists():
-            cover_letter_text = cl_txt.read_text(encoding="utf-8")
-        elif cl_src.suffix == ".txt":
-            cover_letter_text = cl_src.read_text(encoding="utf-8")
-        # Upload must be PDF
         cl_pdf_src = cl_src.with_suffix(".pdf")
         if cl_pdf_src.exists():
             cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
             shutil.copy(str(cl_pdf_src), str(cl_upload))
             cl_upload_path = str(cl_upload)
-
-    # --- Build all prompt sections ---
-    profile_summary = _build_profile_summary(profile)
-    location_check = _build_location_check(profile, search_config)
+            
+    summary = _build_profile_summary(profile)
     salary_section = _build_salary_section(profile)
-    screening_section = _build_screening_section(profile)
-    hard_rules = _build_hard_rules(profile)
-    captcha_section = _build_captcha_section()
+    
+    instruction = f"""
+Task: Apply for this job online using my profile information.
 
-    # Cover letter fallback text
-    city = personal.get("city", "the area")
-    if not cover_letter_text:
-        cl_display = (
-            f"None available. Skip if optional. If required, write 2 factual "
-            f"sentences: (1) relevant experience from the resume that matches "
-            f"this role, (2) available immediately and based in {city}."
-        )
-    else:
-        cl_display = cover_letter_text
-
-    # Phone digits only (for fields with country prefix)
-    phone_digits = "".join(c for c in personal.get("phone", "") if c.isdigit())
-
-    # SSO domains the agent cannot sign into (loaded from config/sites.yaml)
-    from applypilot.config import load_blocked_sso
-    blocked_sso = load_blocked_sso()
-
-    # Preferred display name
-    preferred_name = personal.get("preferred_name", full_name.split()[0])
-    last_name = full_name.split()[-1] if " " in full_name else ""
-    display_name = f"{preferred_name} {last_name}".strip()
-
-    # Dry-run: override submit instruction
-    if dry_run:
-      submit_instruction = "Do NOT click final Submit/Apply. Validate all fields, then output RESULT:APPLIED (dry run)."
-    else:
-      submit_instruction = "Before submit, verify key fields (name, email, phone, auth, uploads). Fix errors, then submit once."
-
-    prompt = f"""You are an autonomous job application agent. Goal: submit a complete application fast and accurately.
-
-== JOB ==
-URL: {job.get('application_url') or job['url']}
-Title: {job['title']}
-Company: {job.get('site', 'Unknown')}
-Fit Score: {job.get('fit_score', 'N/A')}/10
-
-== FILES ==
-Resume PDF (upload this): {pdf_path}
-Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
-
-== RESUME TEXT ==
-{tailored_resume}
-
-== COVER LETTER TEXT ==
-{cl_display}
+Target URL: {job.get('application_url') or job['url']}
 
 == APPLICANT PROFILE ==
-{profile_summary}
-
-== MISSION ==
-Use profile + resume as source of truth. Fill forms, keep outputs concise, and write short confident responses that show value.
-
-{hard_rules}
-
-== NEVER DO THESE ==
-- No camera/mic/location permissions, biometrics, payment/bank/SSN, extensions, executables.
-- No freelancer marketplace onboarding or non-job profile builders -> RESULT:FAILED:not_a_job_application.
-- No SSO login to third-party identity providers when blocked by policy.
-
-{location_check}
+{summary}
 
 {salary_section}
 
-{screening_section}
+== INSTRUCTIONS ==
+1. Go to the Target URL.
+2. Find the application form. If there is a login wall, you can try setting up an account if easy, otherwise skip and report FAILED:login_issue.
+3. Fill out the application form with the Profile provided above. Do not use random info. 
+4. Upload the resume (available as a file in your context). Upload cover letter if requested.
+5. Answer screening/skills questions confidently based on the resume.
+6. {'(DRY RUN) DO NOT click final submit.' if dry_run else 'Click the final submit or apply button.'} 
+7. Once success is confirmed (e.g. 'Thank You'), report RESULT:APPLIED. If you absolutely cannot apply due to unsolvable captcha or account walls, report RESULT:FAILED:reason. 
+"""
+    return instruction, pdf_path, cl_upload_path
 
-== WORKFLOW ==
-1. Navigate to URL, snapshot once, run location check.
-2. Find Apply. If email-only, send email with resume and a short confident pitch, then RESULT:APPLIED.
-3. If login wall: avoid blocked SSO ({', '.join(blocked_sso)}). Use site login ({personal['email']} / {personal.get('password', '')}), then signup/email-code fallback. On failure -> RESULT:FAILED:login_issue.
-4. Upload resume PDF from above (replace stale uploads). Upload/paste cover letter only if requested.
-5. Correct autofill mistakes, complete all required fields, answer screening.
-6. Use CAPTCHA flow only when needed (see CAPTCHA section).
-7. {submit_instruction}
-8. Confirm success page (thank you/application received), then output one RESULT code.
 
-== RESULT CODES (output EXACTLY one) ==
-RESULT:APPLIED -- submitted successfully
-RESULT:EXPIRED -- job closed or no longer accepting applications
-RESULT:CAPTCHA -- blocked by unsolvable captcha
-RESULT:LOGIN_ISSUE -- could not sign in or create account
-RESULT:FAILED:not_eligible_location -- onsite outside acceptable area, no remote option
-RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
-RESULT:FAILED:reason -- any other failure (brief reason)
+def build_prompt_browser_use(job: dict, dry_run: bool = False) -> tuple[str, str | None, str | None]:
+    """
+    Build simplified prompt for browser-use. 
+    Returns (instruction_string, resume_pdf_path, cover_letter_pdf_path)
+    """
+    from pathlib import Path
+    import shutil
+    from applypilot import config
+    
+    profile = config.load_profile()
+    search_config = config.load_search_config()
+    personal = profile["personal"]
+    
+    resume_path = job.get("tailored_resume_path")
+    if not resume_path:
+        raise ValueError(f"No resume for job: {job.get('title', 'unknown')}")
+        
+    src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
+    if not src_pdf.exists():
+        raise ValueError(f"Resume PDF not found: {src_pdf}")
+        
+    full_name = personal["full_name"]
+    name_slug = full_name.replace(" ", "_")
+    dest_dir = config.APPLY_WORKER_DIR / "current"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    upload_pdf = dest_dir / f"{name_slug}_Resume.pdf"
+    shutil.copy(str(src_pdf), str(upload_pdf))
+    pdf_path = str(upload_pdf)
+    
+    cl_upload_path = None
+    cl_path = job.get("cover_letter_path")
+    if cl_path and Path(cl_path).exists():
+        cl_src = Path(cl_path)
+        cl_pdf_src = cl_src.with_suffix(".pdf")
+        if cl_pdf_src.exists():
+            cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
+            shutil.copy(str(cl_pdf_src), str(cl_upload))
+            cl_upload_path = str(cl_upload)
+            
+    summary = _build_profile_summary(profile)
+    salary_section = _build_salary_section(profile)
+    
+    instruction = f"""
+Task: Apply for this job online using my profile information.
 
-== EFFICIENCY ==
-- Keep reasoning short and action-focused.
-- Snapshot once per page, then screenshot for quick checks.
-- Fill fields in batches, not one-by-one.
-- Multi-page forms: complete page, continue, repeat.
+Target URL: {job.get('application_url') or job['url']}
 
-== FORM NOTES ==
-- Check for popup tabs after apply/login clicks and switch if needed.
-- For phone with prefix, use digits only: {phone_digits}
-- Date format default: {datetime.now().strftime('%m/%d/%Y')}
-- If validation fails, snapshot + screenshot, fix, retry once.
-- Skip hidden honeypot fields.
+== APPLICANT PROFILE ==
+{summary}
 
-{captcha_section}
+{salary_section}
 
-== STOP CONDITIONS ==
-- No progress after 3 attempts -> RESULT:FAILED:stuck
-- Closed/expired posting -> RESULT:EXPIRED
-- Broken page/500/blank -> RESULT:FAILED:page_error
-Output one RESULT and stop."""
+== INSTRUCTIONS ==
+1. Go to the Target URL.
+2. Find the application form. If there is a login wall, you can try setting up an account if easy, otherwise skip and report FAILED:login_issue.
+3. Fill out the application form with the Profile provided above. Do not use random info. 
+4. Upload the resume (available as a file in your context). Upload cover letter if requested.
+5. Answer screening/skills questions confidently based on the resume.
+6. {'(DRY RUN) DO NOT click final submit.' if dry_run else 'Click the final submit or apply button.'} 
+7. Once success is confirmed (e.g. 'Thank You'), report RESULT:APPLIED. If you absolutely cannot apply due to unsolvable captcha or account walls, report RESULT:FAILED:reason. 
+"""
+    return instruction, pdf_path, cl_upload_path
 
-    return prompt
+
+def build_prompt_browser_use(job: dict, dry_run: bool = False) -> tuple[str, str | None, str | None]:
+    """
+    Build simplified prompt for browser-use. 
+    Returns (instruction_string, resume_pdf_path, cover_letter_pdf_path)
+    """
+    from pathlib import Path
+    import shutil
+    from applypilot import config
+    
+    profile = config.load_profile()
+    search_config = config.load_search_config()
+    personal = profile["personal"]
+    
+    resume_path = job.get("tailored_resume_path")
+    if not resume_path:
+        raise ValueError(f"No resume for job: {job.get('title', 'unknown')}")
+        
+    src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
+    if not src_pdf.exists():
+        raise ValueError(f"Resume PDF not found: {src_pdf}")
+        
+    full_name = personal["full_name"]
+    name_slug = full_name.replace(" ", "_")
+    dest_dir = config.APPLY_WORKER_DIR / "current"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    upload_pdf = dest_dir / f"{name_slug}_Resume.pdf"
+    shutil.copy(str(src_pdf), str(upload_pdf))
+    pdf_path = str(upload_pdf)
+    
+    cl_upload_path = None
+    cl_path = job.get("cover_letter_path")
+    if cl_path and Path(cl_path).exists():
+        cl_src = Path(cl_path)
+        cl_pdf_src = cl_src.with_suffix(".pdf")
+        if cl_pdf_src.exists():
+            cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
+            shutil.copy(str(cl_pdf_src), str(cl_upload))
+            cl_upload_path = str(cl_upload)
+            
+    summary = _build_profile_summary(profile)
+    salary_section = _build_salary_section(profile)
+    
+    instruction = f"""
+Task: Apply for this job online using my profile information.
+
+Target URL: {job.get('application_url') or job['url']}
+
+== APPLICANT PROFILE ==
+{summary}
+
+{salary_section}
+
+== INSTRUCTIONS ==
+1. Go to the Target URL.
+2. Find the application form. If there is a login wall, you can try setting up an account if easy, otherwise skip and report FAILED:login_issue.
+3. Fill out the application form with the Profile provided above. Do not use random info. 
+4. Upload the resume (available as a file in your context). Upload cover letter if requested.
+5. Answer screening/skills questions confidently based on the resume.
+6. {'(DRY RUN) DO NOT click final submit.' if dry_run else 'Click the final submit or apply button.'} 
+7. Once success is confirmed (e.g. 'Thank You'), report RESULT:APPLIED. If you absolutely cannot apply due to unsolvable captcha or account walls, report RESULT:FAILED:reason. 
+"""
+    return instruction, pdf_path, cl_upload_path
+
+def build_prompt(*args, **kwargs):
+    pass
