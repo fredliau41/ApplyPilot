@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Cover Letter Template</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Serif+Display:ital@1&display=swap" rel="stylesheet">
+<style>
+:root {
+  --accent: #015f65;
+  --accent-soft: #d9ecec;
+  --text: #1b1b1b;
+  --muted: #646461;
+  --paper: #ffffff;
+  --frame: #d8d4cb;
+  --background: #ece9e2;
+  --shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+  --font-body: 'DM Sans', 'Helvetica Neue', Arial, sans-serif;
+  --font-sig: 'DM Serif Display', Georgia, serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+@page { size: letter; margin: 0; }
+body {
+  background: radial-gradient(circle at top, #f8f5ef 0%, var(--background) 48%, #ded9cf 100%);
+  font-family: var(--font-body);
+  color: var(--text);
+  padding: 28px 16px 56px;
+}
+.page {
+  width: 8.5in;
+  min-height: 11in;
+  margin: 0 auto;
+  background: var(--paper);
+  padding: 0.88in 0.74in 0.82in 0.92in;
+  box-shadow: var(--shadow);
+  border-top: 6px solid var(--accent);
+}
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: stretch;
+  padding-bottom: 16px;
+  border-bottom: 1.5px solid var(--frame);
+  margin-bottom: 18px;
+}
+.header-left {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.header-name {
+  font-size: 23pt;
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  color: var(--text);
+}
+.header-role {
+  margin-top: 10px;
+  font-size: 10pt;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+}
+.header-company {
+  margin-top: 2px;
+  font-size: 10pt;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+}
+.header-contact {
+  text-align: right;
+  font-size: 10pt;
+  line-height: 1.7;
+  color: var(--muted);
+  font-weight: 400;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-end;
+}
+.contact-line {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.header-contact a {
+  color: inherit;
+  text-decoration: none;
+}
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 18px;
+}
+.meta-date {
+  font-size: 9pt;
+  color: var(--muted);
+}
+.meta-target {
+  font-size: 10.5pt;
+  font-weight: 600;
+  color: var(--text);
+}
+.greeting {
+  font-size: 11pt;
+  line-height: 1.45;
+  margin-bottom: 0.18in;
+}
+.body-copy {
+  margin-top: 0.02in;
+}
+.body-paragraph {
+  font-size: 10.5pt;
+  line-height: 1.56;
+  margin-bottom: 0.16in;
+  text-align: left;
+}
+.body-paragraph:last-child {
+  margin-bottom: 0;
+}
+.signature {
+  margin-top: 0.28in;
+}
+.template-notes {
+  display: none;
+}
+@media print {
+  body {
+    background: #fff;
+    padding: 0;
+  }
+  .page {
+    width: auto;
+    min-height: auto;
+    margin: 0;
+    padding: 0.78in 0.66in 0.72in 0.82in;
+    box-shadow: none;
+    border-top-width: 0;
+  }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="template-notes">
+    Editable placeholders: [[CANDIDATE_NAME]], [[CANDIDATE_ROLE]], [[CANDIDATE_COMPANY]],
+    [[CONTACT_EMAIL]], [[CONTACT_PHONE]], [[CONTACT_LINKEDIN_TEXT]], [[CONTACT_LINKEDIN_HREF]],
+    [[DATE_LINE]], [[JOB_TITLE]], [[GREETING]],
+    [[BODY_HTML]], [[SIGNATURE_NAME]].
+  </div>
+
+  <div class="header">
+    <div class="header-left">
+      <div class="header-name">[[CANDIDATE_NAME]]</div>
+      <div class="header-role">[[CANDIDATE_ROLE]]</div>
+      <div class="header-company">[[CANDIDATE_COMPANY]]</div>
+    </div>
+    <div class="header-contact">
+      <div class="contact-line contact-email"><a href="mailto:[[CONTACT_EMAIL]]">[[CONTACT_EMAIL]]</a></div>
+      <div class="contact-line contact-phone">[[CONTACT_PHONE]]</div>
+      <div class="contact-line contact-linkedin"><a href="[[CONTACT_LINKEDIN_HREF]]">[[CONTACT_LINKEDIN_TEXT]]</a></div>
+    </div>
+  </div>
+
+  <div class="meta">
+    <div class="meta-date">[[DATE_LINE]]</div>
+    <div class="meta-target">[[JOB_TITLE]]</div>
+  </div>
+
+  <div class="greeting">[[GREETING]]</div>
+  <div class="body-copy">
+    [[BODY_HTML]]
+  </div>
+
+  <div class="body-paragraph signature">[[SIGNATURE_NAME]]</div>
+</div>
+</body>
+</html>

@@ -5,11 +5,16 @@ and exports to PDF using headless Chromium via Playwright.
 """
 
 import logging
+from datetime import datetime
+from html import escape
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
 
 log = logging.getLogger(__name__)
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_COVER_LETTER_TEMPLATE = PACKAGE_ROOT / "templates" / "example_cl.html"
 
 
 # ── Resume Parser ────────────────────────────────────────────────────────
@@ -204,7 +209,9 @@ def build_html(resume: dict) -> str:
     # Contact line parsing
     contact = resume["contact"]
     contact_parts = [p.strip() for p in contact.split("|")] if contact else []
-    contact_html = " &nbsp;|&nbsp; ".join(contact_parts)
+    contact_html = " &nbsp;|&nbsp; ".join(
+        _format_contact_item(part) for part in contact_parts if part
+    )
 
     # Location line (may be empty)
     location_html = f'<div class="location">{resume["location"]}</div>' if resume["location"] else ""
@@ -257,7 +264,7 @@ body {{
 }}
 .contact a {{
     color: #2c3e50;
-    text-decoration: none;
+    text-decoration: underline;
 }}
 .section {{
     margin-top: 5px;
@@ -363,76 +370,145 @@ def _split_cover_letter(text: str) -> tuple[str, list[str], str]:
     return greeting, paragraphs, signature
 
 
-def build_cover_letter_html(text: str) -> str:
+def _cover_letter_template_path() -> Path:
+    """Return the packaged cover-letter template path.
+
+    Source of truth is src/applypilot/templates/example_cl.html.
+    """
+    if PACKAGE_COVER_LETTER_TEMPLATE.exists():
+        return PACKAGE_COVER_LETTER_TEMPLATE
+
+    raise FileNotFoundError(
+        "Cover letter template not found at "
+        f"{PACKAGE_COVER_LETTER_TEMPLATE}"
+    )
+
+
+def _render_cover_letter_paragraphs(paragraphs: list[str]) -> str:
+    """Render cover-letter body paragraphs into HTML."""
+    if not paragraphs:
+        return ""
+
+    return "\n".join(
+        f'<p class="body-paragraph">{escape(paragraph).replace("\n", "<br>")}</p>'
+        for paragraph in paragraphs
+    )
+
+
+def _format_contact_lines(personal: dict) -> str:
+    """Format contact lines for the cover-letter header."""
+    email = personal.get("email") or "your.email@example.com"
+    phone = personal.get("phone") or "+XX XXXX XXXX"
+    linkedin = personal.get("linkedin_url") or "{linkedin link}"
+    lines = [email, phone, linkedin]
+    return "<br>".join(_format_contact_item(str(line)) for line in lines if str(line).strip())
+
+
+def _normalize_url(url: str) -> str:
+    """Ensure URLs are safe and clickable in HTML anchors."""
+    raw = url.strip()
+    if not raw:
+        return ""
+
+    lower = raw.lower()
+    if lower.startswith(("http://", "https://", "mailto:")):
+        return raw
+    return f"https://{raw}" if lower.startswith("www.") else raw
+
+
+def _format_contact_item(value: str) -> str:
+    """Render contact values with clickable links for email and URLs."""
+    raw = value.strip()
+    if not raw:
+        return ""
+
+    lower = raw.lower()
+    if "@" in raw and " " not in raw and "." in raw.split("@")[-1]:
+        href = f"mailto:{raw}"
+        return f'<a href="{escape(href, quote=True)}">{escape(raw)}</a>'
+
+    if lower.startswith(("http://", "https://")):
+        return f'<a href="{escape(raw, quote=True)}">{escape(raw)}</a>'
+
+    if lower.startswith("www."):
+        href = f"https://{raw}"
+        return f'<a href="{escape(href, quote=True)}">{escape(raw)}</a>'
+
+    return escape(raw)
+
+
+def _format_date_line() -> str:
+    """Return a human-readable date for the template header."""
+    now = datetime.now()
+    return f"{now.strftime('%B')} {now.day}, {now.year}"
+
+def _format_header_role(profile: dict) -> tuple[str, str]:
+    """Format the candidate's current role and company for the template header."""
+    experience = profile.get("experience", {})
+
+    current_title = (
+        experience.get("current_job_title")
+        or experience.get("current_title")
+        or experience.get("target_role")
+        or "Applicant"
+    )
+    current_company = experience.get("current_company") or experience.get("current_employer") or ""
+    return str(current_title), str(current_company)
+
+def build_cover_letter_html(
+    text: str,
+    profile: dict | None = None,
+    job: dict | None = None,
+) -> str:
     """Build polished cover-letter HTML optimized for a one-page letter.
 
     Args:
         text: Cover letter text content.
+        profile: Optional user profile for header/signature fields.
+        job: Optional job dict for title metadata.
 
     Returns:
         Complete HTML string ready for PDF rendering.
     """
+    profile = profile or {}
+    personal = profile.get("personal", {})
+    sign_off_name = personal.get("preferred_name") or personal.get("full_name", "")
+    fullname = personal.get("full_name", "")
+    contact_email = str(personal.get("email") or "your.email@example.com")
+    contact_phone = str(personal.get("phone") or "+XX XXXX XXXX")
+    linkedin_raw = str(personal.get("linkedin_url") or "www.linkedin.com/in/your-profile")
+    linkedin_href = _normalize_url(linkedin_raw)
+
     greeting, paragraphs, signature = _split_cover_letter(text)
 
-    greeting_html = f'<p class="greeting">{greeting}</p>' if greeting else ""
-    paragraphs_html = "\n".join(f'<p class="paragraph">{p}</p>' for p in paragraphs)
-    signature_html = f'<p class="signature">{signature}</p>' if signature else ""
+    if not signature:
+        signature = sign_off_name
 
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset=\"utf-8\">
-<style>
-@page {{
-    size: letter;
-    margin: 0;
-}}
-* {{
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}}
-body {{
-    font-family: 'Garamond', 'Georgia', 'Times New Roman', serif;
-    color: #1f1f1f;
-    background: #ffffff;
-}}
-.page {{
-    width: 100%;
-    min-height: 100vh;
-    padding: 0.95in 0.95in 0.9in;
-}}
-.letter {{
-    max-width: 6.2in;
-    margin: 0 auto;
-}}
-.greeting {{
-    font-size: 12.5pt;
-    line-height: 1.45;
-    margin-bottom: 0.2in;
-}}
-.paragraph {{
-    font-size: 12pt;
-    line-height: 1.55;
-    margin-bottom: 0.16in;
-    text-align: left;
-}}
-.signature {{
-    font-size: 12pt;
-    margin-top: 0.28in;
-}}
-</style>
-</head>
-<body>
-<div class=\"page\">
-    <div class=\"letter\">
-        {greeting_html}
-        {paragraphs_html}
-        {signature_html}
-    </div>
-</div>
-</body>
-</html>"""
+    candidate_role, candidate_company = _format_header_role(profile)
+    job_title = str((job or {}).get("title") or "Role Title")
+
+    template = _cover_letter_template_path().read_text(encoding="utf-8")
+    body_html = _render_cover_letter_paragraphs(paragraphs)
+
+    replacements = {
+        "[[CANDIDATE_NAME]]": escape(str(fullname or "Your Name")),
+        "[[CANDIDATE_ROLE]]": escape(str(candidate_role)),
+        "[[CANDIDATE_COMPANY]]": escape(str(candidate_company)),
+        "[[CONTACT_EMAIL]]": escape(contact_email),
+        "[[CONTACT_PHONE]]": escape(contact_phone),
+        "[[CONTACT_LINKEDIN_TEXT]]": escape(linkedin_raw),
+        "[[CONTACT_LINKEDIN_HREF]]": escape(linkedin_href, quote=True),
+        "[[DATE_LINE]]": escape(_format_date_line()),
+        "[[JOB_TITLE]]": escape(job_title),
+        "[[GREETING]]": escape(greeting or "Dear Hiring Manager,"),
+        "[[BODY_HTML]]": body_html,
+        "[[SIGNATURE_NAME]]": escape(str(signature or sign_off_name or "")),
+    }
+
+    for placeholder, value in replacements.items():
+        template = template.replace(placeholder, value)
+
+    return template
 
 
 # ── PDF Renderer ─────────────────────────────────────────────────────────
@@ -462,7 +538,11 @@ def render_pdf(html: str, output_path: str) -> None:
 # ── Public API ───────────────────────────────────────────────────────────
 
 def convert_to_pdf(
-    text_path: Path, output_path: Path | None = None, html_only: bool = False
+    text_path: Path,
+    output_path: Path | None = None,
+    html_only: bool = False,
+    profile: dict | None = None,
+    job: dict | None = None,
 ) -> Path:
     """Convert a text resume/cover letter to PDF.
 
@@ -471,6 +551,8 @@ def convert_to_pdf(
         output_path: Optional override for the output path. Defaults to same
             name with .pdf extension.
         html_only: If True, output HTML instead of PDF.
+        profile: Optional profile dict used for cover-letter header fields.
+        job: Optional job dict used for cover-letter metadata.
 
     Returns:
         Path to the generated PDF (or HTML) file.
@@ -480,7 +562,7 @@ def convert_to_pdf(
 
     # Cover letters use a dedicated template for polished one-page readability.
     if text_path.name.endswith("_CL.txt"):
-        html = build_cover_letter_html(text)
+        html = build_cover_letter_html(text, profile=profile, job=job)
     else:
         resume = parse_resume(text)
         html = build_html(resume)

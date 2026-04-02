@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
-from applypilot.scoring.naming import build_job_file_prefix, job_source_url
 from applypilot.scoring.validator import (
     BANNED_WORDS,
     LLM_LEAK_PHRASES,
@@ -40,6 +39,7 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     resume_facts = profile.get("resume_facts", {})
 
     # Preferred name for the sign-off (falls back to full name)
+    fullname = personal.get("full_name", "")
     sign_off_name = personal.get("preferred_name") or personal.get("full_name", "")
 
     # Flatten all allowed skills
@@ -67,29 +67,25 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     all_banned = ", ".join(f'"{w}"' for w in BANNED_WORDS)
     leak_banned = ", ".join(f'"{p}"' for p in LLM_LEAK_PHRASES)
 
-    return f"""Write a concise, engaging, and professional cover letter for me {sign_off_name}. This company goes through 200 cover letters everyday. Make my value impossible to ignore. 
+    return f"""Write a concise, engaging, and professional cover letter for me {sign_off_name}. This company goes through 200 cover letters everyday so make my value impossible to ignore. 
+
+I have these skills: {skills_str}.
 
 Connect my specific experience to their exact needs and close with confidence. Show don't tell.
 
-
 Structure: 3 short paragraphs. Under 250 words. Every sentence must earn its place.
 
-Paragraph 1 (2-3 sentences): Open with a something about me that solves their problem and is relevant to the job.
+Paragraph 1 (2-3 sentences): Open with a specific thing I built that solves their problem and is relevant to the job.
 
 Paragraph 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to the job. Use numbers. {projects_hint}{metrics_hint}
 
-Paragraph 3 (1-2 sentences): Link One specific thing about the company from the job description that would make me an great fit. Then close. "I would love the opportunity to see and discuss how our goals align in an interview. I will follow up early next week to confirm receipt of my application."
+Paragraph 3 (2-3 sentences): Link one specific thing ab out the company from the job description that would make me an great fit. Then close with something like: I would love for the opportunity to  discuss how my experience can contribute to your team. Looking forward to connect.
 
-
-Banned Punctuation: No em dashes (—) or en dashes (–). Use commas or periods.
-
-
-
-My real skills are: {skills_str}.
+Banned Punctuation: No em dashes (—) or en dashes (–). Use commas or periods. 
 
 Sign off: just "{sign_off_name}"
 
-Avoid generic words like {all_banned}, "directly"
+Avoid generic words like {all_banned}, "directly""
 
 Output only the letter text. No subject lines. No "Here is the cover letter:" preamble. No notes after the sign-off.
 Start DIRECTLY with "Dear Hiring Manager," and end with name: {sign_off_name}."""
@@ -133,7 +129,6 @@ def generate_cover_letter(
     """
     job_text = (
         f"TITLE: {job['title']}\n"
-        f"COMPANY: {job['site']}\n"
         f"LOCATION: {job.get('location', 'N/A')}\n\n"
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
@@ -234,32 +229,19 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             letter = generate_cover_letter(resume_text, job, profile,
                                           validation_mode=validation_mode)
 
-            # Build a collision-resistant filename prefix.
-            prefix = build_job_file_prefix(job)
+            # Build safe filename prefix
+            safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
+            safe_source = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
+            prefix = f"{safe_source}_{safe_title}"
 
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
-
-            cl_job_path = COVER_LETTER_DIR / f"{prefix}_JOB.txt"
-            cl_job_path.write_text(
-                "\n".join([
-                    f"Title: {job['title']}",
-                    f"Company: {job['site']}",
-                    f"Location: {job.get('location', 'N/A')}",
-                    f"URL: {job['url']}",
-                    f"Application URL: {job.get('application_url', '')}",
-                    f"Source URL: {job_source_url(job)}",
-                    f"Prefix: {prefix}",
-                    "",
-                ]),
-                encoding="utf-8",
-            )
 
             # Generate PDF (best-effort)
             pdf_path = None
             try:
                 from applypilot.scoring.pdf import convert_to_pdf
-                pdf_path = str(convert_to_pdf(cl_path))
+                pdf_path = str(convert_to_pdf(cl_path, profile=profile, job=job))
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 

@@ -66,7 +66,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     so it won't destroy existing data.
 
     Schema columns by stage:
-      - Discovery:  url, title, salary, description, location, site, strategy, discovered_at
+    - Discovery:  url, title, salary, description, location, company, site, strategy, discovered_at
       - Enrichment: full_description, application_url, detail_scraped_at, detail_error
       - Scoring:    fit_score, score_reasoning, scored_at
       - Tailoring:  tailored_resume_path, tailored_at, tailor_attempts
@@ -95,6 +95,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             salary                TEXT,
             description           TEXT,
             location              TEXT,
+            company               TEXT,
             site                  TEXT,
             strategy              TEXT,
             discovered_at         TEXT,
@@ -150,6 +151,7 @@ _ALL_COLUMNS: dict[str, str] = {
     "salary": "TEXT",
     "description": "TEXT",
     "location": "TEXT",
+    "company": "TEXT",
     "site": "TEXT",
     "strategy": "TEXT",
     "discovered_at": "TEXT",
@@ -331,8 +333,8 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
     """Store discovered jobs, skipping duplicates by URL.
 
     Args:
-        conn: Database connection.
-        jobs: List of job dicts with keys: url, title, salary, description, location.
+    conn: Database connection.
+    jobs: List of job dicts with keys: url, title, salary, description, location, company.
         site: Source site name (e.g. "RemoteOK", "Dice").
         strategy: Extraction strategy used (e.g. "json_ld", "api_response", "css_selectors").
 
@@ -349,10 +351,10 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
             continue
         try:
             conn.execute(
-                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 "INSERT INTO jobs (url, title, salary, description, location, company, site, strategy, discovered_at) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (url, job.get("title"), job.get("salary"), job.get("description"),
-                 job.get("location"), site, strategy, now),
+                  job.get("location"), job.get("company"), site, strategy, now),
             )
             new += 1
         except sqlite3.IntegrityError:

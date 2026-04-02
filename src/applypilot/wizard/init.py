@@ -128,11 +128,13 @@ def _setup_profile() -> dict:
     # -- Experience --
     console.print("\n[bold cyan]Experience[/bold cyan]")
     current_title = Prompt.ask("Current/most recent job title", default="")
+    current_company = Prompt.ask("Current/most recent company", default="")
     target_role = Prompt.ask("Target role (what you're applying for, e.g. 'Senior Backend Engineer')", default=current_title)
     profile["experience"] = {
         "years_of_experience_total": Prompt.ask("Years of professional experience", default=""),
         "education_level": Prompt.ask("Highest education (e.g. Bachelor's, Master's, PhD, Self-taught)", default=""),
         "current_title": current_title,
+        "current_company": current_company,
         "target_role": target_role,
     }
 
