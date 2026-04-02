@@ -9,7 +9,6 @@ import json
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
@@ -39,7 +38,6 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     resume_facts = profile.get("resume_facts", {})
 
     # Preferred name for the sign-off (falls back to full name)
-    fullname = personal.get("full_name", "")
     sign_off_name = personal.get("preferred_name") or personal.get("full_name", "")
 
     # Flatten all allowed skills
@@ -67,28 +65,39 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     all_banned = ", ".join(f'"{w}"' for w in BANNED_WORDS)
     leak_banned = ", ".join(f'"{p}"' for p in LLM_LEAK_PHRASES)
 
-    return f"""Write a concise, engaging, and professional cover letter for me {sign_off_name}. This company goes through 200 cover letters everyday so make my value impossible to ignore. 
+    return f"""Write a cover letter for {sign_off_name}. The goal is to get an interview.
 
-I have these skills: {skills_str}.
+STRUCTURE: 3 short paragraphs. Under 250 words. Every sentence must earn its place.
 
-Connect my specific experience to their exact needs and close with confidence. Show don't tell.
+PARAGRAPH 1 (2-3 sentences): Open with a specific thing YOU built that solves THEIR problem. Not "I'm excited about this role." Not "This role aligns with my experience." Start with the work.
 
-Structure: 3 short paragraphs. Under 250 words. Every sentence must earn its place.
+PARAGRAPH 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to THIS job. Use numbers. Frame as solving their problem, not listing your accomplishments.{projects_hint}{metrics_hint}
 
-Paragraph 1 (2-3 sentences): Open with a specific thing I built that solves their problem and is relevant to the job.
+PARAGRAPH 3 (1-2 sentences): One specific thing about the company from the job description (a product, a technical challenge, a team structure). Then close. "Happy to walk through any of this in more detail." or "Let's discuss." Nothing else.
 
-Paragraph 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to the job. Use numbers. {projects_hint}{metrics_hint}
+BANNED WORDS AND PHRASES (automated validator rejects ANY of these — do not use even once):
+{all_banned}
 
-Paragraph 3 (2-3 sentences): Link one specific thing ab out the company from the job description that would make me an great fit. Then close with something like: I would love for the opportunity to  discuss how my experience can contribute to your team. Looking forward to connect.
+ALSO BANNED (meta-commentary the validator catches):
+{leak_banned}
 
-Banned Punctuation: No em dashes (—) or en dashes (–). Use commas or periods. 
+BANNED PUNCTUATION: No em dashes (—) or en dashes (–). Use commas or periods.
+
+VOICE:
+- Write like a real engineer emailing someone they respect. Not formal, not casual. Just direct.
+- NEVER narrate or explain what you're doing. BAD: "This demonstrates my commitment to X." GOOD: Just state the fact and move on.
+- NEVER hedge. BAD: "might address some of your challenges." GOOD: "solves the same problem your team is facing."
+- Every sentence should contain either a number, a tool name, or a specific outcome. If it doesn't, cut it.
+- Read it out loud. If it sounds like a robot wrote it, rewrite it.
+
+FABRICATION = INSTANT REJECTION:
+The candidate's real tools are ONLY: {skills_str}.
+Do NOT mention ANY tool not in this list. If the job asks for tools not listed, talk about the work you did, not the tools.
 
 Sign off: just "{sign_off_name}"
 
-Avoid generic words like {all_banned}, "directly""
-
-Output only the letter text. No subject lines. No "Here is the cover letter:" preamble. No notes after the sign-off.
-Start DIRECTLY with "Dear Hiring Manager," and end with name: {sign_off_name}."""
+Output ONLY the letter text. No subject lines. No "Here is the cover letter:" preamble. No notes after the sign-off.
+Start DIRECTLY with "Dear Hiring Manager," and end with the name."""
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -129,6 +138,7 @@ def generate_cover_letter(
     """
     job_text = (
         f"TITLE: {job['title']}\n"
+        f"COMPANY: {job['site']}\n"
         f"LOCATION: {job.get('location', 'N/A')}\n\n"
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
@@ -176,14 +186,13 @@ def generate_cover_letter(
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
 def run_cover_letters(min_score: int = 7, limit: int = 20,
-                      validation_mode: str = "normal", workers: int = 1) -> dict:
+                      validation_mode: str = "normal") -> dict:
     """Generate cover letters for high-scoring jobs that have tailored resumes.
 
     Args:
         min_score:       Minimum fit_score threshold.
         limit:           Maximum jobs to process.
         validation_mode: "strict", "normal", or "lenient".
-        workers:         Number of parallel workers for cover generation.
 
     Returns:
         {"generated": int, "errors": int, "elapsed": float}
@@ -213,26 +222,25 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
         jobs = [dict(zip(columns, row)) for row in jobs]
 
     COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
-    workers = max(1, workers)
     log.info(
-        "Generating cover letters for %d jobs (score >= %d, workers=%d)...",
-        len(jobs), min_score, workers,
+        "Generating cover letters for %d jobs (score >= %d)...",
+        len(jobs), min_score,
     )
     t0 = time.time()
     completed = 0
     results: list[dict] = []
     error_count = 0
-    saved = 0
 
-    def _process_job(job: dict) -> dict:
+    for job in jobs:
+        completed += 1
         try:
             letter = generate_cover_letter(resume_text, job, profile,
                                           validation_mode=validation_mode)
 
             # Build safe filename prefix
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
-            safe_source = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_source}_{safe_title}"
+            safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
+            prefix = f"{safe_site}_{safe_title}"
 
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
@@ -241,67 +249,51 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             pdf_path = None
             try:
                 from applypilot.scoring.pdf import convert_to_pdf
-                pdf_path = str(convert_to_pdf(cl_path, profile=profile, job=job))
+                pdf_path = str(convert_to_pdf(cl_path))
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 
-            return {
+            result = {
                 "url": job["url"],
                 "path": str(cl_path),
                 "pdf_path": pdf_path,
                 "title": job["title"],
                 "site": job["site"],
-                "status": "ok",
             }
+            results.append(result)
+
+            elapsed = time.time() - t0
+            rate = completed / elapsed if elapsed > 0 else 0
+            log.info(
+                "%d/%d [OK] | %.1f jobs/min | %s",
+                completed, len(jobs), rate * 60, result["title"][:40],
+            )
         except Exception as e:
-            return {
+            result = {
                 "url": job["url"], "title": job["title"], "site": job["site"],
-                "path": None, "pdf_path": None, "error": str(e), "status": "error",
+                "path": None, "pdf_path": None, "error": str(e),
             }
+            error_count += 1
+            results.append(result)
+            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
 
-    if workers == 1:
-        result_iter = (_process_job(job) for job in jobs)
-    else:
-        pool = ThreadPoolExecutor(max_workers=workers)
-        futures = [pool.submit(_process_job, job) for job in jobs]
-        result_iter = (future.result() for future in as_completed(futures))
-
-    for result in result_iter:
-        completed += 1
-        results.append(result)
-
-        now = datetime.now(timezone.utc).isoformat()
-        if result.get("path"):
+    # Persist to DB: increment attempt counter for ALL, save path only for successes
+    now = datetime.now(timezone.utc).isoformat()
+    saved = 0
+    for r in results:
+        if r.get("path"):
             conn.execute(
                 "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
                 "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (result["path"], now, result["url"]),
+                (r["path"], now, r["url"]),
             )
             saved += 1
         else:
             conn.execute(
                 "UPDATE jobs SET cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (result["url"],),
+                (r["url"],),
             )
-            error_count += 1
-        conn.commit()
-
-        elapsed = time.time() - t0
-        rate = completed / elapsed if elapsed > 0 else 0
-        if result.get("path"):
-            log.info(
-                "%d/%d [OK] | %.1f jobs/min | %s",
-                completed, len(jobs), rate * 60, result["title"][:40],
-            )
-        else:
-            log.error(
-                "%d/%d [ERROR] | %.1f jobs/min | %s -- %s",
-                completed, len(jobs), rate * 60,
-                result["title"][:40], result.get("error", "unknown error"),
-            )
-
-    if workers > 1:
-        pool.shutdown(wait=True)
+    conn.commit()
 
     elapsed = time.time() - t0
     log.info("Cover letters done in %.1fs: %d generated, %d errors", elapsed, saved, error_count)

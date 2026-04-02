@@ -112,6 +112,26 @@ def load_search_config() -> dict:
         return {}
     return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
 
+def normalize_queries(raw_queries: list) -> list:
+    """Normalize queries from searches.yaml into a flat list.
+    Supports both flat lists and grouped by tier and local includes/excludes.
+    """
+    normalized = []
+    for item in raw_queries:
+        if "searches" in item:
+            tier = item.get("tier", 0)
+            for sub_item in item["searches"]:
+                if isinstance(sub_item, str):
+                    normalized.append({"query": sub_item, "tier": tier})
+                else:
+                    sub_item_copy = dict(sub_item)
+                    if "tier" not in sub_item_copy:
+                        sub_item_copy["tier"] = tier
+                    normalized.append(sub_item_copy)
+        else:
+            normalized.append(item)
+    return normalized
+
 
 def load_sites_config() -> dict:
     """Load sites.yaml configuration (sites list, manual_ats, blocked, etc.)."""
@@ -258,3 +278,26 @@ def check_tier(required: int, feature: str) -> None:
             _console.print(f"  - {m}")
     _console.print()
     raise SystemExit(1)
+
+def title_matches(title: str | None, includes: list[str], excludes: list[str]) -> bool:
+    """Check if a job title passes include/exclude rules (case-insensitive partial match).
+    
+    If includes is empty, the title passes the include check.
+    If it has elements, the title must contain at least one to pass.
+    If excludes has elements and the title contains any, it fails.
+    """
+    if not title or str(title) == "nan":
+        return not bool(includes)
+
+    t = str(title).lower()
+    
+    inc = [str(x).lower() for x in includes if x]
+    exc = [str(x).lower() for x in excludes if x]
+    
+    if inc and not any(i in t for i in inc):
+        return False
+        
+    if exc and any(e in t for e in exc):
+        return False
+        
+    return True

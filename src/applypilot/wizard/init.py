@@ -128,11 +128,13 @@ def _setup_profile() -> dict:
     # -- Experience --
     console.print("\n[bold cyan]Experience[/bold cyan]")
     current_title = Prompt.ask("Current/most recent job title", default="")
+    current_company = Prompt.ask("Current/most recent company", default="")
     target_role = Prompt.ask("Target role (what you're applying for, e.g. 'Senior Backend Engineer')", default=current_title)
     profile["experience"] = {
         "years_of_experience_total": Prompt.ask("Years of professional experience", default=""),
         "education_level": Prompt.ask("Highest education (e.g. Bachelor's, Master's, PhD, Self-taught)", default=""),
         "current_title": current_title,
+        "current_company": current_company,
         "target_role": target_role,
     }
 
@@ -219,11 +221,25 @@ def _setup_searches() -> None:
         f'  - location: "{location}"',
         f"    remote: {str(distance == 0).lower()}",
         "",
+        "include_titles_with: []",
+        "exclude_titles_with: []",
+        "",
         "queries:",
     ]
+    
+    # Group queries by tier
+    tiers = {}
     for i, role in enumerate(roles):
-        lines.append(f'  - query: "{role}"')
-        lines.append(f"    tier: {min(i + 1, 3)}")
+        t = min(i + 1, 3)
+        if t not in tiers:
+            tiers[t] = []
+        tiers[t].append(role)
+        
+    for t in sorted(tiers.keys()):
+        lines.append(f"  - tier: {t}")
+        lines.append("    searches:")
+        for role in tiers[t]:
+            lines.append(f'      - query: "{role}"')
 
     SEARCH_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     console.print(f"[green]Search config saved to {SEARCH_CONFIG_PATH}[/green]")

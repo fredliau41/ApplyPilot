@@ -37,7 +37,8 @@
     "education_level": "Bachelor's Degree",
     "current_job_title": "",
     "current_company": "",
-    "target_role": "software engineer"
+    "target_role": "software engineer",
+    "max_page_resume": 1
   },
   "skills_boundary": {
     "languages": ["Python", "SQL", "JavaScript"],
