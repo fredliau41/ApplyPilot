@@ -277,12 +277,35 @@ def _get_apply_llm(model_override: str):
     if not api_key:
         api_key = os.getenv("OPENAI_API_KEY")
         
-    from langchain_openai import ChatOpenAI
-    return ChatOpenAI(
-        model=model_name,
-        api_key=api_key,
-        base_url=base_url if base_url else None,
-    )
+    # Default to not using vision
+    use_vision = False
+
+    is_deepseek = (base_url and "deepseek" in base_url.lower()) or "deepseek" in model_name.lower()
+    is_openrouter = base_url and "openrouter" in base_url.lower()
+
+    if is_deepseek:
+        from browser_use.llm.deepseek.chat import ChatDeepSeek
+        llm = ChatDeepSeek(
+            model=model_name,
+            api_key=api_key,
+            base_url=base_url if base_url else None,
+        )
+    elif is_openrouter:
+        from browser_use.llm.openrouter.chat import ChatOpenRouter
+        llm = ChatOpenRouter(
+            model=model_name,
+            api_key=api_key,
+            base_url=base_url if base_url else None,
+        )
+    else:
+        from browser_use.llm.openai.chat import ChatOpenAI
+        llm = ChatOpenAI(
+            model=model_name,
+            api_key=api_key,
+            base_url=base_url if base_url else None,
+        )
+
+    return llm, use_vision
 
 def run_job(job: dict, port: int, worker_id: int = 0,
             model: str = "sonnet", dry_run: bool = False, custom_prompt: str | None = None) -> tuple[str, int]:
@@ -336,12 +359,13 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             profile_directory='Default',
         )
         
-        llm = _get_apply_llm(model)
+        llm, use_vision = _get_apply_llm(model)
         
         agent = Agent(
             task=agent_prompt,
             llm=llm,
             browser=browser,
+            use_vision=use_vision,
         )
         
         async def run_agent():
