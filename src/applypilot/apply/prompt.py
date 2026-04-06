@@ -308,7 +308,9 @@ def build_prompt(job: dict, tailored_resume: str,
     """ if custom_prompt else ""
 
 
-    prompt = f"""You are an autonomous job application agent using open-source browser-use. Goal: submit a complete application fast and accurately.
+    prompt = f"""You are an autonomous job application agent using open-source browser-use. Goal: submit a complete application fast and accurately. No need to create a todo.md or second guess yourself. 
+    Just fill out the forms and submit, using the given information 
+    Always output a RESULT code at the end. Straightfoward task
 
 == JOB ==
 URL: {job.get('application_url') or job['url']}
@@ -349,7 +351,7 @@ Use profile + resume as source of truth. Fill forms, keep outputs concise, and w
 
 == WORKFLOW ==
 1. Navigate to URL.
-2. Find Apply, click on it . If email-only, send email with resume and a short confident pitch, then RESULT:APPLIED.
+2. Find Apply, click on it . If email-only, go to mail.google.com, send email with resume and a short confident pitch, then RESULT:APPLIED.
 3. Upload resume PDF using `upload_file` action. 
 4. Upload/paste cover letter only if requested. fill out all the fields with information
 5. Correct autofill mistakes, complete all required fields, answer screening.

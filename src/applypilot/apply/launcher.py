@@ -41,11 +41,14 @@ logger = logging.getLogger(__name__)
 
 _local_log = threading.local()
 
+
 class WorkerLogInterceptor(logging.Filter):
     """Intercepts python logs to prevent terminal clutter, routing them to the worker's job log file."""
+
     def __init__(self):
         super().__init__()
-        self.formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] %(message)s')
+        self.formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - [%(name)s] %(message)s')
 
     def filter(self, record):
         filepath = getattr(_local_log, 'job_log', None)
@@ -355,11 +358,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     try:
         # Setup worker profile and copy cookies
         worker_profile_dir = chrome.setup_worker_profile(worker_id)
-        
+
         # Start browser using the isolated cloned directory to prevent locked crashes
         browser = Browser(
             executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            user_data_dir=os.path.expanduser('~/Library/Application Support/Google/Chrome') if worker_id == 0 else str(worker_profile_dir),
+            user_data_dir=os.path.expanduser(
+                '~/Library/Application Support/Google/Chrome') if worker_id == 0 else str(worker_profile_dir),
             profile_directory='Default',
             disable_security=True,
             args=[
@@ -385,7 +389,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         update_state(worker_id, status="applying", job_title=job["title"],
                      company=job.get("site", ""), score=job.get("fit_score", 0),
                      start_time=time.time(), actions=0, last_action="starting")
-        add_event(f"[W{worker_id}] Starting: {job['title'][:40]} @ {job.get('site', '')}")
+        add_event(
+            f"[W{worker_id}] Starting: {job['title'][:40]} @ {job.get('site', '')}")
 
         ts_file = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         clean_title = "".join(c if c.isalnum() else "_" for c in job["title"])
@@ -410,9 +415,11 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
         def new_step_callback(state, result, step_number):
             with open(job_log, "a", encoding="utf-8") as step_log:
-                step_log.write(f"\n--- [W{worker_id}] Step {step_number} ---\n")
+                step_log.write(
+                    f"\n--- [W{worker_id}] Step {step_number} ---\n")
                 if getattr(result, 'evaluation_previous_goal', None):
-                    step_log.write(f"Evaluation: {result.evaluation_previous_goal}\n")
+                    step_log.write(
+                        f"Evaluation: {result.evaluation_previous_goal}\n")
                 if getattr(result, 'thinking', None):
                     step_log.write(f"Thinking: {result.thinking}\n")
                 if getattr(result, 'action', None):
@@ -425,6 +432,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             browser=browser,
             use_vision=use_vision,
             register_new_step_callback=new_step_callback,
+            use_judge=False,  # Disable judge to speed up execution and reduce token usage
+            # Enable flash mode for faster interactions (may cause more flakiness on some sites
+            max_failures=4
         )
 
         async def run_agent():
@@ -461,7 +471,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
         for result_status in ["APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
             if f"RESULT:{result_status}" in search_text:
-                add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
+                add_event(
+                    f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
                 update_state(worker_id, status=result_status.lower(),
                              last_action=f"{result_status} ({elapsed}s)")
                 return result_status.lower(), duration_ms
@@ -477,11 +488,13 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                     reason = _clean_reason(reason)
                     PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
                     if reason in PROMOTE_TO_STATUS:
-                        add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
+                        add_event(
+                            f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
                         update_state(worker_id, status=reason,
                                      last_action=f"{reason.upper()} ({elapsed}s)")
                         return reason, duration_ms
-                    add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
+                    add_event(
+                        f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
                     update_state(worker_id, status="failed",
                                  last_action=f"FAILED: {reason[:25]}")
                     return f"failed:{reason}", duration_ms
@@ -494,13 +507,15 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         return "failed:no_result_line", duration_ms
 
     except Exception as e:
-            duration_ms = int((time.time() - start) * 1000)
-            add_event(f"[W{worker_id}] ERROR: {str(e)[:40]}")
-            update_state(worker_id, status="failed",
-                        last_action=f"ERROR: {str(e)[:25]}")
-            return f"failed:{str(e)[:100]}", duration_ms
+        duration_ms = int((time.time() - start) * 1000)
+        add_event(f"[W{worker_id}] ERROR: {str(e)[:40]}")
+        update_state(worker_id, status="failed",
+                     last_action=f"ERROR: {str(e)[:25]}")
+        return f"failed:{str(e)[:100]}", duration_ms
     finally:
         _local_log.job_log = None
+
+
 # ---------------------------------------------------------------------------
 PERMANENT_FAILURES: set[str] = {
     "expired", "captcha", "login_issue",
