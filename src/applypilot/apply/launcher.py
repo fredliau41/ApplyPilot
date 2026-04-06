@@ -316,6 +316,13 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     resume_text = ""
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
+        
+    available_paths = []
+    if resume_path and os.path.exists(resume_path):
+        available_paths.append(str(Path(resume_path).absolute()))
+    cover_letter_path = job.get("cover_letter_path")
+    if cover_letter_path and os.path.exists(cover_letter_path):
+        available_paths.append(str(Path(cover_letter_path).absolute()))
 
     # Build the prompt
     agent_prompt = prompt_mod.build_prompt(
@@ -368,9 +375,10 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 browser=browser,
                 use_vision=use_vision,
                 use_judge=False,
-                # planning_exploration_limit=0,
-                # planning_replan_on_stall=0,
-                # loop_detection_enabled=False
+                available_file_paths=available_paths,
+                planning_exploration_limit=0,
+                planning_replan_on_stall=0,
+                loop_detection_enabled=False
             )
         else:
             agent = Agent(
@@ -378,7 +386,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 llm=llm,
                 browser=browser,
                 use_vision=use_vision,
-                use_judge=False
+                use_judge=False,
+                available_file_paths=available_paths
             )
         
         async def run_agent():
