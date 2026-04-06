@@ -27,10 +27,7 @@ from applypilot import config
 from applypilot.database import get_connection
 from applypilot.apply import chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.chrome import (
-    BASE_CDP_PORT,
-    launch_chrome, cleanup_worker, kill_all_chrome,
     reset_worker_dir, cleanup_on_exit, _kill_process_tree,
-    BASE_CDP_PORT,
 )
 from applypilot.apply.dashboard import (
     init_worker, update_state, add_event, get_state,
@@ -49,10 +46,6 @@ POLL_INTERVAL = config.DEFAULTS["poll_interval"]
 
 # Thread-safe shutdown coordination
 _stop_event = threading.Event()
-
-# Track active Claude Code processes for skip (Ctrl+C) handling
-_claude_procs: dict[int, subprocess.Popen] = {}
-_claude_lock = threading.Lock()
 
 # Register cleanup on exit
 atexit.register(cleanup_on_exit)
@@ -270,29 +263,32 @@ def reset_failed() -> int:
 
 def _get_apply_llm(model_override: str):
     import os
-    api_key = os.getenv("APPLY_LLM_API_KEY") or os.getenv("LLM_API_KEY")
-    base_url = os.getenv("APPLY_LLM_URL") or os.getenv("LLM_URL")
-    model_name = model_override or os.getenv("APPLY_LLM_MODEL") or os.getenv("LLM_MODEL") or "gpt-4o"
+    api_key = os.environ.get("APPLY_LLM_API_KEY") or os.environ.get("LLM_API_KEY")
+    base_url = os.environ.get("APPLY_LLM_URL") or os.environ.get("LLM_URL")
+    
+    # Priority: 1. ENV vars, 2. CLI override (which defaults to 'haiku'/'sonnet'), 3. gpt-4o
+    env_model = os.environ.get("APPLY_LLM_MODEL") or os.environ.get("LLM_MODEL")
+    model_name = env_model if env_model else (model_override or "gpt-4o")
     
     if not api_key:
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY")
         
     # Default to not using vision
     use_vision = False
 
-    is_deepseek = (base_url and "deepseek" in base_url.lower()) or "deepseek" in model_name.lower()
     is_openrouter = base_url and "openrouter" in base_url.lower()
+    is_deepseek = (base_url and "deepseek" in base_url.lower()) or "deepseek" in model_name.lower()
 
-    if is_deepseek:
-        from browser_use.llm.deepseek.chat import ChatDeepSeek
-        llm = ChatDeepSeek(
+    if is_openrouter:
+        from browser_use.llm.openrouter.chat import ChatOpenRouter
+        llm = ChatOpenRouter(
             model=model_name,
             api_key=api_key,
             base_url=base_url if base_url else None,
         )
-    elif is_openrouter:
-        from browser_use.llm.openrouter.chat import ChatOpenRouter
-        llm = ChatOpenRouter(
+    elif is_deepseek:
+        from browser_use.llm.deepseek.chat import ChatDeepSeek
+        llm = ChatDeepSeek(
             model=model_name,
             api_key=api_key,
             base_url=base_url if base_url else None,
@@ -305,7 +301,7 @@ def _get_apply_llm(model_override: str):
             base_url=base_url if base_url else None,
         )
 
-    return llm, use_vision
+    return llm, use_vision, is_deepseek, model_name, base_url
 
 def run_job(job: dict, port: int, worker_id: int = 0,
             model: str = "sonnet", dry_run: bool = False, custom_prompt: str | None = None) -> tuple[str, int]:
@@ -359,14 +355,26 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             profile_directory='Default',
         )
         
-        llm, use_vision = _get_apply_llm(model)
+        llm, use_vision, is_deepseek, loaded_model_name, base_url = _get_apply_llm(model)
         
-        agent = Agent(
+        # Display correctly on dashboard 
+        add_event(f"[W{worker_id}] LLM: {loaded_model_name} (DeepSeek={is_deepseek}) baseUrl={base_url}")
+        
+        agent_kwargs = dict(
             task=agent_prompt,
             llm=llm,
             browser=browser,
             use_vision=use_vision,
+            use_judge=False,  # <--- Turn off the judge to save tokens and avoid printing verdicts to console
         )
+
+        # Fix 400 Bad Request on DeepSeek
+        if is_deepseek:
+            agent_kwargs["planning_exploration_limit"] = 0
+            agent_kwargs["planning_replan_on_stall"] = 0
+            agent_kwargs["loop_detection_enabled"] = False
+
+        agent = Agent(**agent_kwargs)
         
         async def run_agent():
             history = await agent.run()
@@ -386,13 +394,27 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 
         # Also search in the history text just in case
         full_text = str(history)
+
+        readable_log = "=== Job Apply Execution Log ===\n\n"
+        for i, (out, res) in enumerate(zip(history.all_model_outputs, history.all_results)):
+            readable_log += f"--- Step {i+1} ---\n"
+            readable_log += f"🤖 Agent Action: {out}\n"
+            ans_str = res.extracted_content or res.long_term_memory or res.error or "None"
+            readable_log += f"📄 Result: {ans_str}\n\n"
+
+        if history.is_successful():
+            readable_log += f"🎉 Success: {history.final_result()}\n\n"
+        elif history.has_errors():
+            readable_log += f"❌ Errors: {history.errors()[-1]}\n\n"
         
         duration_ms = int((time.time() - start) * 1000)
         elapsed = int(time.time() - start)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        job_log = config.LOG_DIR / f"browseruse_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.txt"
-        job_log.write_text(full_text, encoding="utf-8")
+        job_log = config.LOG_DIR / f"browseruse_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.log"
+        
+        # Write both the readable log and the raw text for fallback/debugging
+        job_log.write_text(readable_log + ("\n=== Raw Dump ===\n" + full_text), encoding="utf-8")
 
         def _clean_reason(s: str) -> str:
             import re
@@ -497,7 +519,6 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
     continuous = limit == 0
     jobs_done = 0
     empty_polls = 0
-    port = BASE_CDP_PORT + worker_id
 
     while not _stop_event.is_set():
         if not continuous and jobs_done >= limit:
@@ -525,12 +546,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 
         empty_polls = 0
 
-        chrome_proc = None
         try:
-            add_event(f"[W{worker_id}] Launching Chrome...")
-            chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
-
-            result, duration_ms = run_job(job, port=port, worker_id=worker_id,
+            result, duration_ms = run_job(job, port=0, worker_id=worker_id,
                                             model=model, dry_run=dry_run)
 
             if result == "skipped":
@@ -563,9 +580,6 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             release_lock(job["url"])
             failed += 1
             update_state(worker_id, jobs_failed=failed)
-        finally:
-            if chrome_proc:
-                cleanup_worker(worker_id, chrome_proc)
 
         jobs_done += 1
         if target_url:
@@ -583,19 +597,22 @@ def main(limit: int = 1, target_url: str | None = None,
          min_score: int = 7, headless: bool = False, model: str = "sonnet",
          dry_run: bool = False, continuous: bool = False,
          poll_interval: int = 60, workers: int = 1, custom_prompt: str | None = None) -> None:
-    """Launch the apply pipeline.
+    """Launch the apply pipeline."""
+    
+    # Silence the browser_use logger from spamming the console
+    import logging
+    bu_logger = logging.getLogger("browser_use")
+    bu_logger.setLevel(logging.INFO)
+    bu_logger.propagate = False
+    
+    if not hasattr(bu_logger, "_configured_applypilot"):
+        # Setup file handler pointing to a background log file
+        config.ensure_dirs()
+        fh = logging.FileHandler(config.LOG_DIR / "browser_use_internal.log")
+        fh.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+        bu_logger.addHandler(fh)
+        bu_logger._configured_applypilot = True
 
-    Args:
-        limit: Max jobs to apply to (0 or with continuous=True means run forever).
-        target_url: Apply to a specific URL.
-        min_score: Minimum fit_score threshold.
-        headless: Run Chrome in headless mode.
-        model: Claude model name.
-        dry_run: Don't click Submit.
-        continuous: Run forever, polling for new jobs.
-        poll_interval: Seconds between DB polls when queue is empty.
-        workers: Number of parallel workers (default 1).
-    """
     global POLL_INTERVAL
     POLL_INTERVAL = poll_interval
     _stop_event.clear()
@@ -626,19 +643,11 @@ def main(limit: int = 1, target_url: str | None = None,
         _ctrl_c_count += 1
         if _ctrl_c_count == 1:
             console.print("\n[yellow]Skipping current job(s)... (Ctrl+C again to STOP)[/yellow]")
-            # Kill all active Claude processes to skip current jobs
-            with _claude_lock:
-                for wid, cproc in list(_claude_procs.items()):
-                    if cproc.poll() is None:
-                        _kill_process_tree(cproc.pid)
+            # In a real setup, we'd signal the asyncio event loop or background tasks to cancel
+            # but for now we just rely on the loop finishing and detecting stop_event.
         else:
             console.print("\n[red bold]STOPPING[/red bold]")
             _stop_event.set()
-            with _claude_lock:
-                for wid, cproc in list(_claude_procs.items()):
-                    if cproc.poll() is None:
-                        _kill_process_tree(cproc.pid)
-            kill_all_chrome()
             raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _sigint_handler)
@@ -721,4 +730,3 @@ def main(limit: int = 1, target_url: str | None = None,
         pass
     finally:
         _stop_event.set()
-        kill_all_chrome()

@@ -306,11 +306,18 @@ def build_prompt(job: dict, tailored_resume: str,
 {custom_prompt}
     """ if custom_prompt else ""
 
+    # Ensure valid URL: fallback to main job url if application_url is exactly 'None'
+    app_url = job.get('application_url')
+    if not app_url or str(app_url).lower() == "none":
+        app_url = job.get('url')
 
-    prompt = f"""You are an autonomous job application agent using open-source browser-use. Goal: submit a complete application fast and accurately.
+    prompt = f"""You are an autonomous job application agent. Goal: submit a complete application fast and accurately.
+
+== MISSION ==
+Use profile + resume as source of truth. Fill forms, keep outputs concise, and write short confident responses that show value.
 
 == JOB ==
-URL: {job.get('application_url') or job['url']}
+URL: {app_url}
 Title: {job['title']}
 Company: {job.get('site', 'Unknown')}
 Fit Score: {job.get('fit_score', 'N/A')}/10
@@ -328,12 +335,12 @@ Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
 == APPLICANT PROFILE ==
 {profile_summary}
 
-== MISSION ==
-Use profile + resume as source of truth. Fill forms, keep outputs concise, and write short confident responses that show value.
+
 
 {hard_rules}
 
 == NEVER DO THESE ==
+- Do NOT create, read, or write any local text files (such as todo.md, results.md, or logs) using your tools. Keep everything in memory and act quickly.
 - No camera/mic/location permissions, biometrics, payment/bank/SSN, extensions, executables.
 - No freelancer marketplace onboarding or non-job profile builders -> RESULT:FAILED:not_a_job_application.
 - No SSO login to third-party identity providers when blocked by policy.
