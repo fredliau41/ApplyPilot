@@ -208,7 +208,8 @@ def _build_hard_rules(profile: dict) -> str:
 def build_prompt(job: dict, tailored_resume: str,
                  cover_letter: str | None = None,
                  dry_run: bool = False,
-                 custom_prompt: str | None = None) -> str:
+                 custom_prompt: str | None = None,
+                 worker_id: int = 0) -> str:
     """Build the full instruction prompt for the apply agent.
 
     Loads the user profile and search config internally. All personal data
@@ -240,7 +241,7 @@ def build_prompt(job: dict, tailored_resume: str,
     # Copy to a clean filename for upload (recruiters see the filename)
     full_name = personal["full_name"]
     name_slug = full_name.replace(" ", "_")
-    dest_dir = config.APPLY_WORKER_DIR / "current"
+    dest_dir = config.APPLY_WORKER_DIR / f"worker-{worker_id}"
     dest_dir.mkdir(parents=True, exist_ok=True)
     upload_pdf = dest_dir / f"{name_slug}_Resume.pdf"
     shutil.copy(str(src_pdf), str(upload_pdf))
@@ -306,18 +307,11 @@ def build_prompt(job: dict, tailored_resume: str,
 {custom_prompt}
     """ if custom_prompt else ""
 
-    # Ensure valid URL: fallback to main job url if application_url is exactly 'None'
-    app_url = job.get('application_url')
-    if not app_url or str(app_url).lower() == "none":
-        app_url = job.get('url')
 
-    prompt = f"""You are an autonomous job application agent. Goal: submit a complete application fast and accurately.
-
-== MISSION ==
-Use profile + resume as source of truth. Fill forms, keep outputs concise, and write short confident responses that show value.
+    prompt = f"""You are an autonomous job application agent using open-source browser-use. Goal: submit a complete application fast and accurately.
 
 == JOB ==
-URL: {app_url}
+URL: {job.get('application_url') or job['url']}
 Title: {job['title']}
 Company: {job.get('site', 'Unknown')}
 Fit Score: {job.get('fit_score', 'N/A')}/10
@@ -335,13 +329,14 @@ Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
 == APPLICANT PROFILE ==
 {profile_summary}
 
-
+== MISSION ==
+Use profile + resume as source of truth. Fill forms, keep outputs concise, and write short confident responses that show value.
 
 {hard_rules}
 
 == NEVER DO THESE ==
-- Do NOT create, read, or write any local text files (such as todo.md, results.md, or logs) using your tools. Keep everything in memory and act quickly.
 - No camera/mic/location permissions, biometrics, payment/bank/SSN, extensions, executables.
+- Do not use "–" anywhere
 - No freelancer marketplace onboarding or non-job profile builders -> RESULT:FAILED:not_a_job_application.
 - No SSO login to third-party identity providers when blocked by policy.
 
@@ -354,9 +349,9 @@ Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
 
 == WORKFLOW ==
 1. Navigate to URL.
-2. Find Apply. If email-only, send email with resume and a short confident pitch, then RESULT:APPLIED.
+2. Find Apply, click on it . If email-only, send email with resume and a short confident pitch, then RESULT:APPLIED.
 3. Upload resume PDF using `upload_file` action. 
-4. Upload/paste cover letter only if requested.
+4. Upload/paste cover letter only if requested. fill out all the fields with information
 5. Correct autofill mistakes, complete all required fields, answer screening.
 6. {submit_instruction}
 7. Confirm success page (thank you/application received), then output one RESULT code.
@@ -366,15 +361,13 @@ RESULT:APPLIED -- submitted successfully
 RESULT:EXPIRED -- job closed or no longer accepting applications
 RESULT:LOGIN_ISSUE -- could not sign in or create account
 RESULT:UNFIT:reason -- eg. onsite outside acceptable area, no remote option
-RESULT:FAILED:reason -- any other failure (brief reason)
+RESULT:FAILED:reason -- any other failure (brief reason) (eg. page is broken, can't find posting/url anymore - do not attempt to find it)
 
-== EFFICIENCY ==
-- Output multiple actions per step to fill out forms faster.
-- Check for popup tabs or ifframes.
+
 
 == STOP CONDITIONS ==
 - No progress after 3 attempts -> RESULT:FAILED:stuck
-- Closed/expired posting -> RESULT:EXPIRED
+- Closed/expired posting immediately return -> RESULT:EXPIRED
 - Broken page/500/blank -> RESULT:FAILED:page_error
 Output one RESULT and stop."""
 

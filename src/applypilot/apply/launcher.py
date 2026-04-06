@@ -27,7 +27,10 @@ from applypilot import config
 from applypilot.database import get_connection
 from applypilot.apply import chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.chrome import (
+    BASE_CDP_PORT,
+    launch_chrome, cleanup_worker, kill_all_chrome,
     reset_worker_dir, cleanup_on_exit, _kill_process_tree,
+    BASE_CDP_PORT,
 )
 from applypilot.apply.dashboard import (
     init_worker, update_state, add_event, get_state,
@@ -36,10 +39,29 @@ from applypilot.apply.dashboard import (
 
 logger = logging.getLogger(__name__)
 
+_local_log = threading.local()
+
+class WorkerLogInterceptor(logging.Filter):
+    """Intercepts python logs to prevent terminal clutter, routing them to the worker's job log file."""
+    def __init__(self):
+        super().__init__()
+        self.formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] %(message)s')
+
+    def filter(self, record):
+        filepath = getattr(_local_log, 'job_log', None)
+        if filepath is not None:
+            msg = self.formatter.format(record)
+            with open(filepath, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        return False  # Always returning False prevents logs from hitting the terminal StreamHandler
+
 # Blocked sites loaded from config/sites.yaml
+
+
 def _load_blocked():
     from applypilot.config import load_blocked_sites
     return load_blocked_sites()
+
 
 # How often to poll the DB when the queue is empty (seconds)
 POLL_INTERVAL = config.DEFAULTS["poll_interval"]
@@ -47,11 +69,14 @@ POLL_INTERVAL = config.DEFAULTS["poll_interval"]
 # Thread-safe shutdown coordination
 _stop_event = threading.Event()
 
+# Track active Claude Code processes for skip (Ctrl+C) handling
+_claude_procs: dict[int, subprocess.Popen] = {}
+_claude_lock = threading.Lock()
+
 # Register cleanup on exit
 atexit.register(cleanup_on_exit)
 if platform.system() != "Windows":
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +121,8 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 params.extend(blocked_sites)
             url_clauses = ""
             if blocked_patterns:
-                url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
+                url_clauses = " ".join(
+                    f"AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
@@ -182,13 +208,15 @@ def release_lock(url: str) -> None:
 # ---------------------------------------------------------------------------
 
 def gen_prompt(target_url: str, min_score: int = 7,
-               model: str = "sonnet", worker_id: int = 0) -> Path | None:
+               model: str | None = None, worker_id: int = 0,
+               custom_prompt: str | None = None) -> Path | None:
     """Generate a prompt file and print the Claude CLI command for manual debugging.
 
     Returns:
         Path to the generated prompt file, or None if no job found.
     """
-    job = acquire_job(target_url=target_url, min_score=min_score, worker_id=worker_id)
+    job = acquire_job(target_url=target_url,
+                      min_score=min_score, worker_id=worker_id)
     if not job:
         return None
 
@@ -199,7 +227,8 @@ def gen_prompt(target_url: str, min_score: int = 7,
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
 
-    prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text)
+    prompt = prompt_mod.build_prompt(
+        job=job, tailored_resume=resume_text, custom_prompt=custom_prompt, worker_id=worker_id)
 
     # Release the lock so the job stays available
     release_lock(job["url"])
@@ -207,7 +236,8 @@ def gen_prompt(target_url: str, min_score: int = 7,
     # Write prompt file
     config.ensure_dirs()
     site_slug = (job.get("site") or "unknown")[:20].replace(" ", "_")
-    prompt_file = config.LOG_DIR / f"prompt_{site_slug}_{job['title'][:30].replace(' ', '_')}.txt"
+    prompt_file = config.LOG_DIR / \
+        f"prompt_{site_slug}_{job['title'][:30].replace(' ', '_')}.txt"
     prompt_file.write_text(prompt, encoding="utf-8")
 
     return prompt_file
@@ -263,32 +293,31 @@ def reset_failed() -> int:
 
 def _get_apply_llm(model_override: str):
     import os
-    api_key = os.environ.get("APPLY_LLM_API_KEY") or os.environ.get("LLM_API_KEY")
-    base_url = os.environ.get("APPLY_LLM_URL") or os.environ.get("LLM_URL")
-    
-    # Priority: 1. ENV vars, 2. CLI override (which defaults to 'haiku'/'sonnet'), 3. gpt-4o
-    env_model = os.environ.get("APPLY_LLM_MODEL") or os.environ.get("LLM_MODEL")
-    model_name = env_model if env_model else (model_override or "gpt-4o")
-    
+    api_key = os.getenv("APPLY_LLM_API_KEY") or os.getenv("LLM_API_KEY")
+    base_url = os.getenv("APPLY_LLM_URL") or os.getenv("LLM_URL")
+    model_name = model_override or os.getenv(
+        "APPLY_LLM_MODEL") or os.getenv("LLM_MODEL") or "gpt-4o"
+
     if not api_key:
-        api_key = os.environ.get("OPENAI_API_KEY")
-        
+        api_key = os.getenv("OPENAI_API_KEY")
+
     # Default to not using vision
     use_vision = False
 
+    is_deepseek = (base_url and "deepseek" in base_url.lower()
+                   ) or "deepseek" in model_name.lower()
     is_openrouter = base_url and "openrouter" in base_url.lower()
-    is_deepseek = (base_url and "deepseek" in base_url.lower()) or "deepseek" in model_name.lower()
 
-    if is_openrouter:
-        from browser_use.llm.openrouter.chat import ChatOpenRouter
-        llm = ChatOpenRouter(
+    if is_deepseek:
+        from browser_use.llm.deepseek.chat import ChatDeepSeek
+        llm = ChatDeepSeek(
             model=model_name,
             api_key=api_key,
             base_url=base_url if base_url else None,
         )
-    elif is_deepseek:
-        from browser_use.llm.deepseek.chat import ChatDeepSeek
-        llm = ChatDeepSeek(
+    elif is_openrouter:
+        from browser_use.llm.openrouter.chat import ChatOpenRouter
+        llm = ChatOpenRouter(
             model=model_name,
             api_key=api_key,
             base_url=base_url if base_url else None,
@@ -301,101 +330,109 @@ def _get_apply_llm(model_override: str):
             base_url=base_url if base_url else None,
         )
 
-    return llm, use_vision, is_deepseek, model_name, base_url
+    return llm, use_vision
+
 
 def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "sonnet", dry_run: bool = False, custom_prompt: str | None = None) -> tuple[str, int]:
+            model: str | None = None, dry_run: bool = False, custom_prompt: str | None = None) -> tuple[str, int]:
     """Spawn a browser-use Agent session for one job application."""
     import asyncio
     from browser_use import Agent, Browser
     from langchain_openai import ChatOpenAI
 
+    start = time.time()
+
     # Read tailored resume text
     resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
+    txt_path = Path(resume_path).with_suffix(
+        ".txt") if resume_path else None
     resume_text = ""
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
-        
-    available_paths = []
-    if resume_path and os.path.exists(resume_path):
-        available_paths.append(str(Path(resume_path).absolute()))
-    cover_letter_path = job.get("cover_letter_path")
-    if cover_letter_path and os.path.exists(cover_letter_path):
-        available_paths.append(str(Path(cover_letter_path).absolute()))
-
-    # Build the prompt
-    agent_prompt = prompt_mod.build_prompt(
-        job=job,
-        tailored_resume=resume_text,
-        dry_run=dry_run,
-        custom_prompt=custom_prompt
-    )
 
     worker_dir = reset_worker_dir(worker_id)
 
-    update_state(worker_id, status="applying", job_title=job["title"],
-                 company=job.get("site", ""), score=job.get("fit_score", 0),
-                 start_time=time.time(), actions=0, last_action="starting")
-    add_event(f"[W{worker_id}] Starting: {job['title'][:40]} @ {job.get('site', '')}")
-
-    worker_log = config.LOG_DIR / f"worker-{worker_id}.log"
-    ts_header = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_header = (
-        f"\n{'=' * 60}\n"
-        f"[{ts_header}] {job['title']} @ {job.get('site', '')}\n"
-        f"URL: {job.get('application_url') or job['url']}\n"
-        f"Score: {job.get('fit_score', 'N/A')}/10\n"
-        f"{'=' * 60}\n"
-    )
-
-    start = time.time()
-    
-    # Write to log
-    with open(worker_log, "a", encoding="utf-8") as lf:
-        lf.write(log_header)
-        
     try:
+        # Setup worker profile and copy cookies
+        worker_profile_dir = chrome.setup_worker_profile(worker_id)
+        
+        # Start browser using the isolated cloned directory to prevent locked crashes
         browser = Browser(
             executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            user_data_dir=os.path.expanduser('~/Library/Application Support/Google/Chrome'),
+            user_data_dir=os.path.expanduser('~/Library/Application Support/Google/Chrome') if worker_id == 0 else str(worker_profile_dir),
             profile_directory='Default',
+            disable_security=True,
+            args=[
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--no-first-run",
+                "--no-default-browser-check",
+                f"--window-name=ApplyPilot-W{worker_id}"
+            ]
         )
-        
-        llm, use_vision, is_deepseek, loaded_model_name, base_url = _get_apply_llm(model)
-        
-        # Display correctly on dashboard 
-        add_event(f"[W{worker_id}] LLM: {loaded_model_name} (DeepSeek={is_deepseek}) baseUrl={base_url}")
-        
-        if is_deepseek:
-            # Fix 400 Bad Request on DeepSeek
-            agent = Agent(
-                task=agent_prompt,
-                llm=llm,
-                browser=browser,
-                use_vision=use_vision,
-                use_judge=False,
-                available_file_paths=available_paths,
-                planning_exploration_limit=0,
-                planning_replan_on_stall=0,
-                loop_detection_enabled=False
-            )
-        else:
-            agent = Agent(
-                task=agent_prompt,
-                llm=llm,
-                browser=browser,
-                use_vision=use_vision,
-                use_judge=False,
-                available_file_paths=available_paths
-            )
-        
+
+        llm, use_vision = _get_apply_llm(model)
+
+        agent_prompt = prompt_mod.build_prompt(
+            job=job,
+            tailored_resume=resume_text,
+            dry_run=dry_run,
+            custom_prompt=custom_prompt,
+            worker_id=worker_id
+        )
+
+        update_state(worker_id, status="applying", job_title=job["title"],
+                     company=job.get("site", ""), score=job.get("fit_score", 0),
+                     start_time=time.time(), actions=0, last_action="starting")
+        add_event(f"[W{worker_id}] Starting: {job['title'][:40]} @ {job.get('site', '')}")
+
+        ts_file = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        clean_title = "".join(c if c.isalnum() else "_" for c in job["title"])
+        if len(clean_title) > 30:
+            clean_title = clean_title[:30]
+
+        job_log = config.LOG_DIR / f"browser_use_{clean_title}_{ts_file}.log"
+        _local_log.job_log = str(job_log)
+
+        ts_header = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_header = (
+            f"\n{'=' * 60}\n"
+            f"[{ts_header}] {job['title']} @ {job.get('site', '')}\n"
+            f"URL: {job.get('application_url') or job['url']}\n"
+            f"Score: {job.get('fit_score', 'N/A')}/10\n"
+            f"{'=' * 60}\n"
+        )
+
+        # Write to log
+        with open(job_log, "a", encoding="utf-8") as lf:
+            lf.write(log_header)
+
+        def new_step_callback(state, result, step_number):
+            with open(job_log, "a", encoding="utf-8") as step_log:
+                step_log.write(f"\n--- [W{worker_id}] Step {step_number} ---\n")
+                if getattr(result, 'evaluation_previous_goal', None):
+                    step_log.write(f"Evaluation: {result.evaluation_previous_goal}\n")
+                if getattr(result, 'thinking', None):
+                    step_log.write(f"Thinking: {result.thinking}\n")
+                if getattr(result, 'action', None):
+                    for a in result.action:
+                        step_log.write(f"Action: {a}\n")
+
+        agent = Agent(
+            task=agent_prompt,
+            llm=llm,
+            browser=browser,
+            use_vision=use_vision,
+            register_new_step_callback=new_step_callback,
+        )
+
         async def run_agent():
             history = await agent.run()
             return history
-            
+
         history = asyncio.run(run_agent())
-        
+
         # Get result from the final actions
         output = ""
         if history.is_done() or history.is_successful():
@@ -405,30 +442,15 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 output = history.errors()[-1]
             elif history.urls():
                 output = "failed:unknown"
-                
+
         # Also search in the history text just in case
         full_text = str(history)
 
-        readable_log = "=== Job Apply Execution Log ===\n\n"
-        for i, (out, res) in enumerate(zip(history.model_outputs(), history.action_results())):
-            readable_log += f"--- Step {i+1} ---\n"
-            readable_log += f"🤖 Agent Action: {out}\n"
-            ans_str = res.extracted_content or res.long_term_memory or res.error or "None"
-            readable_log += f"📄 Result: {ans_str}\n\n"
-
-        if history.is_successful():
-            readable_log += f"🎉 Success: {history.final_result()}\n\n"
-        elif history.has_errors():
-            readable_log += f"❌ Errors: {history.errors()[-1]}\n\n"
-        
         duration_ms = int((time.time() - start) * 1000)
         elapsed = int(time.time() - start)
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        job_log = config.LOG_DIR / f"browseruse_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.log"
-        
-        # Write both the readable log and the raw text for fallback/debugging
-        job_log.write_text(readable_log + ("\n=== Raw Dump ===\n" + full_text), encoding="utf-8")
+        with open(job_log, "a", encoding="utf-8") as lf:
+            lf.write("\n" + full_text)
 
         def _clean_reason(s: str) -> str:
             import re
@@ -436,8 +458,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
         # check anywhere in the output or final text
         search_text = output + "\n" + full_text
-        
-        # Simple states with no reason attached
+
         for result_status in ["APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
             if f"RESULT:{result_status}" in search_text:
                 add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
@@ -445,51 +466,42 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                              last_action=f"{result_status} ({elapsed}s)")
                 return result_status.lower(), duration_ms
 
-        # States with a reason
-        for state_prefix in ["FAILED", "UNFIT"]:
-            if f"RESULT:{state_prefix}" in search_text:
-                for out_line in search_text.split("\n"):
-                    prefix_with_colon = f"RESULT:{state_prefix}:"
-                    if f"RESULT:{state_prefix}" in out_line:
-                        idx = out_line.find(prefix_with_colon)
-                        if idx != -1:
-                            reason = out_line[idx + len(prefix_with_colon):].strip()
-                        else:
-                            reason = "unknown"
-                        reason = _clean_reason(reason)
-                        PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
-                        if reason in PROMOTE_TO_STATUS:
-                            add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
-                            update_state(worker_id, status=reason, last_action=f"{reason.upper()} ({elapsed}s)")
-                            return reason, duration_ms
-                        
-                        add_event(f"[W{worker_id}] {state_prefix} ({elapsed}s): {reason[:30]}")
-                        update_state(worker_id, status=state_prefix.lower(), last_action=f"{state_prefix}: {reason[:25]}")
-                        return f"{state_prefix.lower()}:{reason}", duration_ms
-                        
-        return "failed:unknown", duration_ms
+        if "RESULT:FAILED" in search_text:
+            for out_line in search_text.split("\n"):
+                if "RESULT:FAILED" in out_line:
+                    idx = out_line.find("RESULT:FAILED:")
+                    if idx != -1:
+                        reason = out_line[idx + 14:].strip()
+                    else:
+                        reason = "unknown"
+                    reason = _clean_reason(reason)
+                    PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
+                    if reason in PROMOTE_TO_STATUS:
+                        add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
+                        update_state(worker_id, status=reason,
+                                     last_action=f"{reason.upper()} ({elapsed}s)")
+                        return reason, duration_ms
+                    add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
+                    update_state(worker_id, status="failed",
+                                 last_action=f"FAILED: {reason[:25]}")
+                    return f"failed:{reason}", duration_ms
+            return "failed:unknown", duration_ms
 
         # fallback
         add_event(f"[W{worker_id}] NO RESULT ({elapsed}s)")
-        update_state(worker_id, status="failed", last_action=f"no result ({elapsed}s)")
+        update_state(worker_id, status="failed",
+                     last_action=f"no result ({elapsed}s)")
         return "failed:no_result_line", duration_ms
 
     except Exception as e:
-        duration_ms = int((time.time() - start) * 1000)
-        add_event(f"[W{worker_id}] ERROR: {str(e)[:40]}")
-        update_state(worker_id, status="failed", last_action=f"ERROR: {str(e)[:25]}")
-        return f"failed:{str(e)[:100]}", duration_ms
+            duration_ms = int((time.time() - start) * 1000)
+            add_event(f"[W{worker_id}] ERROR: {str(e)[:40]}")
+            update_state(worker_id, status="failed",
+                        last_action=f"ERROR: {str(e)[:25]}")
+            return f"failed:{str(e)[:100]}", duration_ms
     finally:
-        # Browser cleanup is handled by browser-use implicitly when going out of scope / asyncio event loop,
-        # but you could add explicit cleanup if supported
-        pass
-
-
-
+        _local_log.job_log = None
 # ---------------------------------------------------------------------------
-# Permanent failure classification
-# ---------------------------------------------------------------------------
-
 PERMANENT_FAILURES: set[str] = {
     "expired", "captcha", "login_issue",
     "not_eligible_location", "not_eligible_salary",
@@ -499,7 +511,8 @@ PERMANENT_FAILURES: set[str] = {
     "site_blocked", "cloudflare_blocked", "blocked_by_cloudflare",
 }
 
-PERMANENT_PREFIXES: tuple[str, ...] = ("site_blocked", "cloudflare", "blocked_by")
+PERMANENT_PREFIXES: tuple[str, ...] = (
+    "site_blocked", "cloudflare", "blocked_by")
 
 
 def _is_permanent_failure(result: str) -> bool:
@@ -519,7 +532,7 @@ def _is_permanent_failure(result: str) -> bool:
 def worker_loop(worker_id: int = 0, limit: int = 1,
                 target_url: str | None = None,
                 min_score: int = 7, headless: bool = False,
-                model: str = "sonnet", dry_run: bool = False, custom_prompt: str | None = None) -> tuple[int, int]:
+                model: str | None = None, dry_run: bool = False, custom_prompt: str | None = None) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -539,6 +552,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
     continuous = limit == 0
     jobs_done = 0
     empty_polls = 0
+    port = BASE_CDP_PORT + worker_id
 
     while not _stop_event.is_set():
         if not continuous and jobs_done >= limit:
@@ -552,13 +566,15 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         if not job:
             if not continuous:
                 add_event(f"[W{worker_id}] Queue empty")
-                update_state(worker_id, status="done", last_action="queue empty")
+                update_state(worker_id, status="done",
+                             last_action="queue empty")
                 break
             empty_polls += 1
             update_state(worker_id, status="idle",
                          last_action=f"polling ({empty_polls})")
             if empty_polls == 1:
-                add_event(f"[W{worker_id}] Queue empty, polling every {POLL_INTERVAL}s...")
+                add_event(
+                    f"[W{worker_id}] Queue empty, polling every {POLL_INTERVAL}s...")
             # Use Event.wait for interruptible sleep
             if _stop_event.wait(timeout=POLL_INTERVAL):
                 break  # Stop was requested during wait
@@ -566,9 +582,14 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 
         empty_polls = 0
 
+        chrome_proc = None
         try:
-            result, duration_ms = run_job(job, port=0, worker_id=worker_id,
-                                            model=model, dry_run=dry_run)
+            add_event(f"[W{worker_id}] Launching Chrome...")
+            chrome_proc = launch_chrome(
+                worker_id, port=port, headless=headless)
+
+            result, duration_ms = run_job(job, port=port, worker_id=worker_id,
+                                          model=model, dry_run=dry_run, custom_prompt=custom_prompt)
 
             if result == "skipped":
                 release_lock(job["url"])
@@ -600,6 +621,9 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             release_lock(job["url"])
             failed += 1
             update_state(worker_id, jobs_failed=failed)
+        finally:
+            if chrome_proc:
+                cleanup_worker(worker_id, chrome_proc)
 
         jobs_done += 1
         if target_url:
@@ -614,28 +638,39 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 # ---------------------------------------------------------------------------
 
 def main(limit: int = 1, target_url: str | None = None,
-         min_score: int = 7, headless: bool = False, model: str = "sonnet",
+         min_score: int = 7, headless: bool = False, model: str | None = None,
          dry_run: bool = False, continuous: bool = False,
          poll_interval: int = 60, workers: int = 1, custom_prompt: str | None = None) -> None:
-    """Launch the apply pipeline."""
-    
-    # Silence the browser_use logger from spamming the console
-    import logging
-    bu_logger = logging.getLogger("browser_use")
-    bu_logger.setLevel(logging.INFO)
-    bu_logger.propagate = False
-    
-    if not hasattr(bu_logger, "_configured_applypilot"):
-        # Setup file handler pointing to a background log file
-        config.ensure_dirs()
-        fh = logging.FileHandler(config.LOG_DIR / "browser_use_internal.log")
-        fh.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-        bu_logger.addHandler(fh)
-        bu_logger._configured_applypilot = True
+    """Launch the apply pipeline.
 
+    Args:
+        limit: Max jobs to apply to (0 or with continuous=True means run forever).
+        target_url: Apply to a specific URL.
+        min_score: Minimum fit_score threshold.
+        headless: Run Chrome in headless mode.
+        model: Claude model name.
+        dry_run: Don't click Submit.
+        continuous: Run forever, polling for new jobs.
+        poll_interval: Seconds between DB polls when queue is empty.
+        workers: Number of parallel workers (default 1).
+    """
     global POLL_INTERVAL
     POLL_INTERVAL = poll_interval
     _stop_event.clear()
+
+    # Route Python logging away from the terminal and into thread-local job logs
+    interceptor = WorkerLogInterceptor()
+    for hl in logging.getLogger().handlers:
+        hl.addFilter(interceptor)
+    bu_logger = logging.getLogger("browser_use")
+    bu_logger.setLevel(logging.INFO)
+    for hl in bu_logger.handlers:
+        hl.addFilter(interceptor)
+    if not bu_logger.handlers:
+        import sys
+        h = logging.StreamHandler(sys.stderr)
+        h.addFilter(interceptor)
+        bu_logger.addHandler(h)
 
     config.ensure_dirs()
     console = Console()
@@ -652,7 +687,8 @@ def main(limit: int = 1, target_url: str | None = None,
         init_worker(i)
 
     worker_label = f"{workers} worker{'s' if workers > 1 else ''}"
-    console.print(f"Launching apply pipeline ({mode_label}, {worker_label}, poll every {POLL_INTERVAL}s)...")
+    console.print(
+        f"Launching apply pipeline ({mode_label}, {worker_label}, poll every {POLL_INTERVAL}s)...")
     console.print("[dim]Ctrl+C = skip current job(s) | Ctrl+C x2 = stop[/dim]")
 
     # Double Ctrl+C handler
@@ -662,12 +698,21 @@ def main(limit: int = 1, target_url: str | None = None,
         nonlocal _ctrl_c_count
         _ctrl_c_count += 1
         if _ctrl_c_count == 1:
-            console.print("\n[yellow]Skipping current job(s)... (Ctrl+C again to STOP)[/yellow]")
-            # In a real setup, we'd signal the asyncio event loop or background tasks to cancel
-            # but for now we just rely on the loop finishing and detecting stop_event.
+            console.print(
+                "\n[yellow]Skipping current job(s)... (Ctrl+C again to STOP)[/yellow]")
+            # Kill all active Claude processes to skip current jobs
+            with _claude_lock:
+                for wid, cproc in list(_claude_procs.items()):
+                    if cproc.poll() is None:
+                        _kill_process_tree(cproc.pid)
         else:
             console.print("\n[red bold]STOPPING[/red bold]")
             _stop_event.set()
+            with _claude_lock:
+                for wid, cproc in list(_claude_procs.items()):
+                    if cproc.poll() is None:
+                        _kill_process_tree(cproc.pid)
+            kill_all_chrome()
             raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _sigint_handler)
@@ -750,3 +795,4 @@ def main(limit: int = 1, target_url: str | None = None,
         pass
     finally:
         _stop_event.set()
+        kill_all_chrome()
