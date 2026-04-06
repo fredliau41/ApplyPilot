@@ -360,21 +360,26 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         # Display correctly on dashboard 
         add_event(f"[W{worker_id}] LLM: {loaded_model_name} (DeepSeek={is_deepseek}) baseUrl={base_url}")
         
-        agent_kwargs = dict(
-            task=agent_prompt,
-            llm=llm,
-            browser=browser,
-            use_vision=use_vision,
-            use_judge=False,  # <--- Turn off the judge to save tokens and avoid printing verdicts to console
-        )
-
-        # Fix 400 Bad Request on DeepSeek
         if is_deepseek:
-            agent_kwargs["planning_exploration_limit"] = 0
-            agent_kwargs["planning_replan_on_stall"] = 0
-            agent_kwargs["loop_detection_enabled"] = False
-
-        agent = Agent(**agent_kwargs)
+            # Fix 400 Bad Request on DeepSeek
+            agent = Agent(
+                task=agent_prompt,
+                llm=llm,
+                browser=browser,
+                use_vision=use_vision,
+                use_judge=False,
+                # planning_exploration_limit=0,
+                # planning_replan_on_stall=0,
+                # loop_detection_enabled=False
+            )
+        else:
+            agent = Agent(
+                task=agent_prompt,
+                llm=llm,
+                browser=browser,
+                use_vision=use_vision,
+                use_judge=False
+            )
         
         async def run_agent():
             history = await agent.run()
@@ -396,7 +401,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         full_text = str(history)
 
         readable_log = "=== Job Apply Execution Log ===\n\n"
-        for i, (out, res) in enumerate(zip(history.all_model_outputs, history.all_results)):
+        for i, (out, res) in enumerate(zip(history.model_outputs(), history.action_results())):
             readable_log += f"--- Step {i+1} ---\n"
             readable_log += f"🤖 Agent Action: {out}\n"
             ans_str = res.extracted_content or res.long_term_memory or res.error or "None"
@@ -423,6 +428,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         # check anywhere in the output or final text
         search_text = output + "\n" + full_text
         
+        # Simple states with no reason attached
         for result_status in ["APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
             if f"RESULT:{result_status}" in search_text:
                 add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
@@ -430,24 +436,29 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                              last_action=f"{result_status} ({elapsed}s)")
                 return result_status.lower(), duration_ms
 
-        if "RESULT:FAILED" in search_text:
-            for out_line in search_text.split("\n"):
-                if "RESULT:FAILED" in out_line:
-                    idx = out_line.find("RESULT:FAILED:")
-                    if idx != -1:
-                        reason = out_line[idx + 14:].strip()
-                    else:
-                        reason = "unknown"
-                    reason = _clean_reason(reason)
-                    PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
-                    if reason in PROMOTE_TO_STATUS:
-                        add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
-                        update_state(worker_id, status=reason, last_action=f"{reason.upper()} ({elapsed}s)")
-                        return reason, duration_ms
-                    add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
-                    update_state(worker_id, status="failed", last_action=f"FAILED: {reason[:25]}")
-                    return f"failed:{reason}", duration_ms
-            return "failed:unknown", duration_ms
+        # States with a reason
+        for state_prefix in ["FAILED", "UNFIT"]:
+            if f"RESULT:{state_prefix}" in search_text:
+                for out_line in search_text.split("\n"):
+                    prefix_with_colon = f"RESULT:{state_prefix}:"
+                    if f"RESULT:{state_prefix}" in out_line:
+                        idx = out_line.find(prefix_with_colon)
+                        if idx != -1:
+                            reason = out_line[idx + len(prefix_with_colon):].strip()
+                        else:
+                            reason = "unknown"
+                        reason = _clean_reason(reason)
+                        PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
+                        if reason in PROMOTE_TO_STATUS:
+                            add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
+                            update_state(worker_id, status=reason, last_action=f"{reason.upper()} ({elapsed}s)")
+                            return reason, duration_ms
+                        
+                        add_event(f"[W{worker_id}] {state_prefix} ({elapsed}s): {reason[:30]}")
+                        update_state(worker_id, status=state_prefix.lower(), last_action=f"{state_prefix}: {reason[:25]}")
+                        return f"{state_prefix.lower()}:{reason}", duration_ms
+                        
+        return "failed:unknown", duration_ms
 
         # fallback
         add_event(f"[W{worker_id}] NO RESULT ({elapsed}s)")
