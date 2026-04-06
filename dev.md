@@ -64,7 +64,7 @@ applypilot reprint --target resume
 applypilot reprint --target all
 
 applypilot apply --workers 3 --dry-run  --limit 12
-applypilot apply --workers 1 --dry-run  --limit 1
+applypilot apply --workers 1 --limit 1
 
 # …etc.
 ```

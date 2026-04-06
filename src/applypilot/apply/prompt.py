@@ -202,37 +202,13 @@ def _build_hard_rules(profile: dict) -> str:
   3. {name_rule}"""
 
 
-def _build_captcha_section() -> str:
-    """Build a minimal CAPTCHA section with external, on-demand instructions."""
-    capture_path = config.APP_DIR / "capture.txt"
-    captcha_path = config.APP_DIR / "captcha.txt"
 
-    if capture_path.exists():
-        instructions_path = capture_path
-    elif captcha_path.exists():
-        instructions_path = captcha_path
-    else:
-        # Prefer the user-requested filename if neither exists yet.
-        instructions_path = capture_path
-
-    return f"""== CAPTCHA (EDGE CASE ONLY) ==
-Most applications have no CAPTCHA. Do not run extra CAPTCHA steps unless blocked.
-
-Only treat as CAPTCHA when:
-- a challenge widget is visible, or
-- submit/login/apply is blocked with no validation error.
-
-If CAPTCHA is detected:
-1. Try one normal continue/submit/verify click.
-2. Read and follow instructions in: {instructions_path}
-3. If the file is missing or the challenge still blocks progress after 2 attempts -> RESULT:CAPTCHA.
-
-Keep this flow short. CAPTCHA is a rare fallback path, not the default workflow."""
 
 
 def build_prompt(job: dict, tailored_resume: str,
                  cover_letter: str | None = None,
-                 dry_run: bool = False) -> str:
+                 dry_run: bool = False,
+                 custom_prompt: str | None = None) -> str:
     """Build the full instruction prompt for the apply agent.
 
     Loads the user profile and search config internally. All personal data
@@ -295,8 +271,7 @@ def build_prompt(job: dict, tailored_resume: str,
     salary_section = _build_salary_section(profile)
     screening_section = _build_screening_section(profile)
     hard_rules = _build_hard_rules(profile)
-    captcha_section = _build_captcha_section()
-
+    
     # Cover letter fallback text
     city = personal.get("city", "the area")
     if not cover_letter_text:
@@ -322,11 +297,17 @@ def build_prompt(job: dict, tailored_resume: str,
 
     # Dry-run: override submit instruction
     if dry_run:
-      submit_instruction = "Do NOT click final Submit/Apply. Validate all fields, then output RESULT:APPLIED (dry run)."
+      submit_instruction = "Do NOT submit. Validate all fields, then output RESULT:APPLIED (dry run)."
     else:
-      submit_instruction = "Before submit, verify key fields (name, email, phone, auth, uploads). Fix errors, then submit once."
+      submit_instruction = "Before submit, verify key fields. Fix errors, then submit once."
+      
+    custom_instruction = f"""
+== CUSTOM USER INSTRUCTIONS ==
+{custom_prompt}
+    """ if custom_prompt else ""
 
-    prompt = f"""You are an autonomous job application agent. Goal: submit a complete application fast and accurately.
+
+    prompt = f"""You are an autonomous job application agent using open-source browser-use. Goal: submit a complete application fast and accurately.
 
 == JOB ==
 URL: {job.get('application_url') or job['url']}
@@ -362,40 +343,27 @@ Use profile + resume as source of truth. Fill forms, keep outputs concise, and w
 {salary_section}
 
 {screening_section}
+{custom_instruction}
 
 == WORKFLOW ==
-1. Navigate to URL, snapshot once, run location check.
+1. Navigate to URL.
 2. Find Apply. If email-only, send email with resume and a short confident pitch, then RESULT:APPLIED.
-3. If login wall: avoid blocked SSO ({', '.join(blocked_sso)}). Use site login ({personal['email']} / {personal.get('password', '')}), then signup/email-code fallback. On failure -> RESULT:FAILED:login_issue.
-4. Upload resume PDF from above (replace stale uploads). Upload/paste cover letter only if requested.
+3. Upload resume PDF using `upload_file` action. 
+4. Upload/paste cover letter only if requested.
 5. Correct autofill mistakes, complete all required fields, answer screening.
-6. Use CAPTCHA flow only when needed (see CAPTCHA section).
-7. {submit_instruction}
-8. Confirm success page (thank you/application received), then output one RESULT code.
+6. {submit_instruction}
+7. Confirm success page (thank you/application received), then output one RESULT code.
 
-== RESULT CODES (output EXACTLY one) ==
+== RESULT CODES (output EXACTLY one anywhere in your final output) ==
 RESULT:APPLIED -- submitted successfully
 RESULT:EXPIRED -- job closed or no longer accepting applications
-RESULT:CAPTCHA -- blocked by unsolvable captcha
 RESULT:LOGIN_ISSUE -- could not sign in or create account
-RESULT:FAILED:not_eligible_location -- onsite outside acceptable area, no remote option
-RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
+RESULT:UNFIT:reason -- eg. onsite outside acceptable area, no remote option
 RESULT:FAILED:reason -- any other failure (brief reason)
 
 == EFFICIENCY ==
-- Keep reasoning short and action-focused.
-- Snapshot once per page, then screenshot for quick checks.
-- Fill fields in batches, not one-by-one.
-- Multi-page forms: complete page, continue, repeat.
-
-== FORM NOTES ==
-- Check for popup tabs after apply/login clicks and switch if needed.
-- For phone with prefix, use digits only: {phone_digits}
-- Date format default: {datetime.now().strftime('%m/%d/%Y')}
-- If validation fails, snapshot + screenshot, fix, retry once.
-- Skip hidden honeypot fields.
-
-{captcha_section}
+- Output multiple actions per step to fill out forms faster.
+- Check for popup tabs or ifframes.
 
 == STOP CONDITIONS ==
 - No progress after 3 attempts -> RESULT:FAILED:stuck
@@ -404,3 +372,4 @@ RESULT:FAILED:reason -- any other failure (brief reason)
 Output one RESULT and stop."""
 
     return prompt
+

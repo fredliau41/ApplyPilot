@@ -168,6 +168,7 @@ def apply(
     mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
     fail_reason: Optional[str] = typer.Option(None, "--fail-reason", help="Reason for --mark-failed."),
     reset_failed: bool = typer.Option(False, "--reset-failed", help="Reset all failed jobs for retry."),
+    custom_prompt: Optional[str] = typer.Option(None, "--prompt", help="Custom instructions to append to the application prompt."),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
@@ -227,7 +228,7 @@ def apply(
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
             raise typer.Exit(code=1)
-        prompt_file = gen_prompt(target, min_score=min_score, model=model)
+        prompt_file = gen_prompt(target, min_score=min_score, model=model, custom_prompt=custom_prompt)
         if not prompt_file:
             console.print("[red]No matching job found for that URL.[/red]")
             raise typer.Exit(code=1)
@@ -264,6 +265,7 @@ def apply(
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
+        custom_prompt=custom_prompt,
     )
 
 
