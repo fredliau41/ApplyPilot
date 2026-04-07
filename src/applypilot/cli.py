@@ -88,12 +88,12 @@ def run(
         20,
         "--limit",
         "-l",
-        help="Maximum number of jobs to process for tailor/cover stages per run.",
+        help="Maximum number of items to process per stage this run (unless stage-specific limits are provided).",
     ),
     discover_limit: Optional[int] = typer.Option(
         None,
         "--discover-limit",
-        help="Maximum new jobs to discover this run. 0 = unlimited (default behavior).",
+        help="Maximum new jobs to discover this run. 0 = unlimited.",
     ),
     enrich_limit: Optional[int] = typer.Option(
         None,
@@ -184,15 +184,15 @@ def run(
             )
             raise typer.Exit(code=1)
 
-    # Defaults preserve existing behavior for all stages except discovery,
-    # which defaults to unlimited so long crawls can be explicitly capped.
+    # Global --limit applies to every stage by default.
+    # Any explicit --<stage>-limit value overrides this default per stage.
     stage_limits = {
-        "discover": 0,
-        "enrich": 100,
-        "score": 0,
+        "discover": limit,
+        "enrich": limit,
+        "score": limit,
         "tailor": limit,
         "cover": limit,
-        "pdf": 50,
+        "pdf": limit,
     }
     for stage, value in per_stage_limit_options.items():
         if value is not None:

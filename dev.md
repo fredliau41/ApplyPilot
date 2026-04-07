@@ -26,9 +26,9 @@ which applypilot
 applypilot init
 applypilot doctor
 
-# Pipeline stages (discover → enrich → score → tailor → cover → pdf)
+# Pipeline stages (discover enrich score tailor cover pdf)
 applypilot run                              # all stages
-applypilot run discover --workers 8
+applypilot run --workers 8 --limit 70
 applypilot run score --workers 8
 applypilot run tailor --limit 100 --workers 4
 applypilot run tailor cover --limit 100 --workers 4
