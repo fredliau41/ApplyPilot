@@ -33,6 +33,7 @@ def _build_profile_summary(profile: dict) -> str:
     lines = [
         f"Name: {personal['full_name']}",
         f"Email: {personal['email']}",
+        f"Password: {personal.get('password', '')}",
         f"Phone: {personal['phone']}",
     ]
 
@@ -310,6 +311,7 @@ def build_prompt(job: dict, tailored_resume: str,
     preferred_name = personal.get("preferred_name", full_name.split()[0])
     last_name = full_name.split()[-1] if " " in full_name else ""
     display_name = f"{preferred_name} {last_name}".strip()
+    blocked_sso_list = ", ".join(blocked_sso) if blocked_sso else "None"
 
     # Dry-run: override submit instruction
     if dry_run:
@@ -347,7 +349,7 @@ Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
 {profile_summary}
 
 == MISSION ==
-Use profile + resume as source of truth. Fill forms, keep outputs concise, and write short confident responses that show value.
+Use profile + resume as source of truth. Fill forms, keep outputs concise, and write confident responses that show value.
 
 {hard_rules}
 
@@ -364,14 +366,19 @@ Use profile + resume as source of truth. Fill forms, keep outputs concise, and w
 {screening_section}
 {custom_instruction}
 
+
 == WORKFLOW ==
 1. Navigate to URL.
-2. Find Apply, click on it . If email-only, go to mail.google.com, send email with resume and a short confident pitch, then RESULT:APPLIED.
-3. Upload resume PDF using `upload_file` action. 
-4. Upload/paste cover letter only if requested. fill out all the fields with information
-5. Correct autofill mistakes, complete all required fields, answer screening.
-6. {submit_instruction}
-7. Confirm success page (thank you/application received), then output one RESULT code.
+2. Find Apply and click it. If account creation/sign-in is required, complete it using profile credentials and continue.
+    - Login Email: {personal.get('email', '')}
+    - Login Password: {personal.get('password', '')}
+3. If verification is required, open mail.google.com, retrieve verification code or click confirmation link to verify account then login and continue application
+4. If email-only application, go to mail.google.com, send email with resume and a short confident pitch, then RESULT:APPLIED.
+5. Upload resume PDF using `upload_file` action. 
+6. Upload/paste cover letter only if requested. fill out all the fields with information
+7. Correct autofill mistakes, complete all required fields, answer screening.
+8. {submit_instruction}
+9. Confirm success page (thank you/application received), then output one RESULT code.
 
 == RESULT CODES (output EXACTLY one anywhere in your final output) ==
 RESULT:APPLIED -- submitted successfully

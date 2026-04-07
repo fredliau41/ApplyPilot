@@ -397,7 +397,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         if len(clean_title) > 30:
             clean_title = clean_title[:30]
 
-        job_log = config.LOG_DIR / f"browser_use_{clean_title}_{ts_file}.log"
+        job_log = config.LOG_DIR / f"{ts_file}_{clean_title}.log"
         _local_log.job_log = str(job_log)
 
         ts_header = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
