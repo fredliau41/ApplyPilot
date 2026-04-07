@@ -42,12 +42,7 @@ def load_employers() -> dict:
 
 def _load_location_filter(search_cfg: dict | None = None):
     """Load location accept/reject lists from search config."""
-    if search_cfg is None:
-        search_cfg = config.load_search_config()
-
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
+    return config.load_location_filters(search_cfg)
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
@@ -57,12 +52,12 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 
     loc = location.lower()
 
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
-        return True
-
     for r in reject:
         if r.lower() in loc:
             return False
+
+    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
+        return True
 
     for a in accept:
         if a.lower() in loc:
@@ -349,6 +344,7 @@ def _process_one(
     reject_locs: list[str],
     title_includes: list[str] | None = None,
     title_excludes: list[str] | None = None,
+    max_new_jobs: int = 0,
 ) -> dict:
     """Search one employer, fetch details, store results w/ filters."""
     emp = employers[employer_key]
@@ -357,6 +353,7 @@ def _process_one(
         jobs = search_employer(
             employer_key, emp, search_text,
             location_filter=location_filter,
+            max_results=max_new_jobs,
             accept_locs=accept_locs,
             reject_locs=reject_locs,
         )
@@ -427,6 +424,12 @@ def scrape_employers(
     total_found = 0
     errors = 0
     t0 = time.time()
+    limit_hit = False
+
+    if max_results > 0 and workers > 1:
+        # Precise global caps need deterministic sequential processing.
+        log.info("max_results set; forcing workers=1 for strict Workday cap")
+        workers = 1
 
     valid_keys = [k for k in employer_keys if k in employers]
 
@@ -438,7 +441,7 @@ def scrape_employers(
                 pool.submit(
                     _process_one, key, employers, search_text,
                     location_filter, accept_locs, reject_locs,
-                    title_includes, title_excludes,
+                    title_includes, title_excludes, 0,
                 ): key
                 for key in valid_keys
             }
@@ -459,10 +462,18 @@ def scrape_employers(
         # Sequential mode (default)
         completed = 0
         for key in valid_keys:
+            remaining = 0
+            if max_results > 0:
+                remaining = max(0, max_results - total_new)
+                if remaining == 0:
+                    limit_hit = True
+                    break
+
             result = _process_one(
                 key, employers, search_text,
                 location_filter, accept_locs, reject_locs,
                 title_includes, title_excludes,
+                remaining,
             )
             completed += 1
             total_new += result["new"]
@@ -476,16 +487,23 @@ def scrape_employers(
                 log.info("[%s] Progress: %d/%d employers (%d new, %d dupes, %d errors) [%.0fs]",
                          search_text, completed, len(valid_keys), total_new, total_existing, errors, elapsed)
 
+            if max_results > 0 and total_new >= max_results:
+                limit_hit = True
+                break
+
     elapsed = time.time() - t0
     log.info("[%s] Done: %d found, %d new, %d dupes in %.0fs",
              search_text, total_found, total_new, total_existing, elapsed)
 
-    return {"found": total_found, "new": total_new, "existing": total_existing}
+    if limit_hit:
+        log.info("[%s] Workday limit reached (%d new jobs).", search_text, max_results)
+
+    return {"found": total_found, "new": total_new, "existing": total_existing, "limit_reached": limit_hit}
 
 
 # -- Public entry point ------------------------------------------------------
 
-def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> dict:
+def run_workday_discovery(employers: dict | None = None, workers: int = 1, max_new_jobs: int = 0) -> dict:
     """Main entry point for Workday-based corporate job discovery.
 
     Loads employer registry from config/employers.yaml (or uses the provided
@@ -495,6 +513,8 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
     Args:
         employers: Override the employer registry. If None, loads from YAML.
         workers: Number of parallel threads for employer scraping. Default 1 (sequential).
+        max_new_jobs: Maximum number of new jobs to insert in this run.
+                      0 means unlimited.
 
     Returns:
         Dict with stats: found, new, existing, queries.
@@ -542,6 +562,13 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
     grand_found = 0
 
     for i, q in enumerate(queries_to_run, 1):
+        remaining = 0
+        if max_new_jobs > 0:
+            remaining = max(0, max_new_jobs - grand_new)
+            if remaining == 0:
+                log.info("Workday discovery limit reached (%d new jobs).", max_new_jobs)
+                break
+
         query = q["query"]
         local_inc = global_includes + (q.get("include_titles_with", []) or [])
         local_exc = global_excludes + (q.get("exclude_titles_with", []) or [])
@@ -556,10 +583,15 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
             title_includes=local_inc,
             title_excludes=local_exc,
             workers=workers,
+            max_results=remaining,
         )
         grand_new += result["new"]
         grand_existing += result["existing"]
         grand_found += result["found"]
+
+        if result.get("limit_reached"):
+            log.info("Workday discovery limit reached (%d new jobs).", max_new_jobs)
+            break
 
     log.info("Workday crawl done: %d found, %d new, %d existing across %d queries x %d employers",
              grand_found, grand_new, grand_existing, len(queries_to_run), len(employers))

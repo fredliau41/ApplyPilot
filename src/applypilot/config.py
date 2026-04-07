@@ -112,6 +112,26 @@ def load_search_config() -> dict:
         return {}
     return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
 
+
+def load_location_filters(search_cfg: dict | None = None) -> tuple[list[str], list[str]]:
+    """Load location accept/reject patterns from search config.
+
+    Supports both legacy top-level keys and the nested `location:` mapping.
+    """
+    if search_cfg is None:
+        search_cfg = load_search_config()
+
+    location_cfg = search_cfg.get("location", {}) or {}
+    accept = search_cfg.get("location_accept")
+    reject = search_cfg.get("location_reject_non_remote")
+
+    if accept is None:
+        accept = location_cfg.get("accept_patterns", [])
+    if reject is None:
+        reject = location_cfg.get("reject_patterns", [])
+
+    return accept or [], reject or []
+
 def normalize_queries(raw_queries: list) -> list:
     """Normalize queries from searches.yaml into a flat list.
     Supports both flat lists and grouped by tier and local includes/excludes.

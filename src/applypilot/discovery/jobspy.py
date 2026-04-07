@@ -81,30 +81,26 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
 
     Falls back to sensible defaults if not defined in the YAML.
     """
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
+    return config.load_location_filters(search_cfg)
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter.
 
-    Remote jobs are always accepted. Non-remote jobs must match an accept
-    pattern and not match a reject pattern.
+    Reject patterns are applied first so they also exclude remote jobs.
     """
     if not location:
         return True  # unknown location -- keep it, let scorer decide
 
     loc = location.lower()
 
-    # Remote jobs always OK
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
-        return True
-
-    # Reject non-remote matches
     for r in reject:
         if r.lower() in loc:
             return False
+
+    # Remote jobs always OK
+    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
+        return True
 
     # Accept matches
     for a in accept:
@@ -117,13 +113,26 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 
 # -- DB storage (JobSpy DataFrame -> SQLite) ---------------------------------
 
-def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tuple[int, int]:
-    """Store JobSpy DataFrame results into the DB. Returns (new, existing)."""
+def store_jobspy_results(
+    conn: sqlite3.Connection,
+    df,
+    source_label: str,
+    max_new_jobs: int = 0,
+) -> tuple[int, int, bool]:
+    """Store JobSpy DataFrame results into the DB.
+
+    Returns:
+        (new, existing, limit_reached)
+    """
     now = datetime.now(timezone.utc).isoformat()
     new = 0
     existing = 0
 
     for _, row in df.iterrows():
+        if max_new_jobs > 0 and new >= max_new_jobs:
+            conn.commit()
+            return new, existing, True
+
         url = str(row.get("job_url", ""))
         if not url or url == "nan":
             continue
@@ -179,7 +188,7 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
             existing += 1
 
     conn.commit()
-    return new, existing
+    return new, existing, False
 
 
 # -- Single search execution -------------------------------------------------
@@ -197,10 +206,11 @@ def _run_one_search(
     glassdoor_map: dict,
     global_includes: list[str],
     global_excludes: list[str],
+    max_new_jobs: int = 0,
 ) -> dict:
     """Run a single search query and store results in DB."""
     s = search
-    label = f"\"{s['query']}\" in {s['location']} {'(remote)' if s.get('remote') else ''}"
+    label = f"\"{s['query']}\" in {s['location']} {'(remote)' if s.get('remote_only') else ''}"
     if "tier" in s:
         label += f" [tier {s['tier']}]"
 
@@ -223,7 +233,7 @@ def _run_one_search(
             "country_indeed": defaults.get("country_indeed", "usa"),
             "verbose": 0,
         }
-        if s.get("remote"):
+        if s.get("remote_only"):
             kwargs["is_remote"] = True
         if proxy_config:
             kwargs["proxies"] = [proxy_config["jobspy"]]
@@ -246,7 +256,7 @@ def _run_one_search(
             "description_format": "markdown",
             "verbose": 0,
         }
-        if s.get("remote"):
+        if s.get("remote_only"):
             gd_kwargs["is_remote"] = True
         if proxy_config:
             gd_kwargs["proxies"] = [proxy_config["jobspy"]]
@@ -283,14 +293,27 @@ def _run_one_search(
     filtered = before - len(df)
 
     conn = get_connection()
-    new, existing = store_jobspy_results(conn, df, s["query"])
+    new, existing, limit_reached = store_jobspy_results(
+        conn,
+        df,
+        s["query"],
+        max_new_jobs=max_new_jobs,
+    )
 
     msg = f"[{label}] {before} results -> {new} new, {existing} dupes"
     if filtered:
         msg += f", {filtered} filtered (location/title)"
     log.info(msg)
 
-    return {"new": new, "existing": existing, "errors": 0, "filtered": filtered, "total": before, "label": label}
+    return {
+        "new": new,
+        "existing": existing,
+        "errors": 0,
+        "filtered": filtered,
+        "total": before,
+        "label": label,
+        "limit_reached": limit_reached,
+    }
 
 
 # -- Single query search -----------------------------------------------------
@@ -351,7 +374,7 @@ def search_jobs(
             log.info("  %s: %d", site, count)
 
     conn = init_db()
-    new, existing = store_jobspy_results(conn, df, query)
+    new, existing, _ = store_jobspy_results(conn, df, query)
     log.info("Stored: %d new, %d already in DB", new, existing)
 
     db_total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -372,6 +395,7 @@ def _full_crawl(
     hours_old: int = 72,
     proxy: str | None = None,
     max_retries: int = 2,
+    max_new_jobs: int = 0,
 ) -> dict:
     """Run all search queries from search config across all locations."""
     if sites is None:
@@ -399,10 +423,13 @@ def _full_crawl(
     searches = []
     for q in queries:
         for loc in locs:
+            remote_only = loc.get("remote_only")
+            if remote_only is None:
+                remote_only = loc.get("remote", False)
             search_item = {
                 "query": q["query"],
                 "location": loc["location"],
-                "remote": loc.get("remote", False),
+                "remote_only": remote_only,
                 "tier": q.get("tier", 0),
             }
             if "include_titles_with" in q:
@@ -426,11 +453,19 @@ def _full_crawl(
     completed = 0
 
     for s in searches:
+        remaining = 0
+        if max_new_jobs > 0:
+            remaining = max(0, max_new_jobs - total_new)
+            if remaining == 0:
+                log.info("JobSpy discovery limit reached (%d new jobs). Stopping crawl.", max_new_jobs)
+                break
+
         result = _run_one_search(
             s, sites, results_per_site, hours_old,
             proxy_config, defaults, max_retries,
             accept_locs, reject_locs, glassdoor_map,
             global_includes, global_excludes,
+            max_new_jobs=remaining,
         )
         completed += 1
         total_new += result["new"]
@@ -440,6 +475,10 @@ def _full_crawl(
         if completed % 5 == 0 or completed == len(searches):
             log.info("Progress: %d/%d queries done (%d new, %d dupes, %d errors)",
                      completed, len(searches), total_new, total_existing, total_errors)
+
+        if result.get("limit_reached"):
+            log.info("JobSpy discovery limit reached (%d new jobs). Stopping crawl.", max_new_jobs)
+            break
 
     # Final stats
     conn = get_connection()
@@ -459,7 +498,7 @@ def _full_crawl(
 
 # -- Public entry point ------------------------------------------------------
 
-def run_discovery(cfg: dict | None = None) -> dict:
+def run_discovery(cfg: dict | None = None, max_new_jobs: int = 0) -> dict:
     """Main entry point for JobSpy-based job discovery.
 
     Loads search queries and locations from the user's search config YAML,
@@ -468,6 +507,8 @@ def run_discovery(cfg: dict | None = None) -> dict:
     Args:
         cfg: Override the search configuration dict. If None, loads from
              the user's searches.yaml file.
+        max_new_jobs: Maximum number of new jobs to insert in this run.
+                      0 means unlimited.
 
     Returns:
         Dict with stats: new, existing, errors, db_total, queries.
@@ -494,4 +535,5 @@ def run_discovery(cfg: dict | None = None) -> dict:
         results_per_site=results_per_site,
         hours_old=hours_old,
         proxy=proxy,
+        max_new_jobs=max_new_jobs,
     )

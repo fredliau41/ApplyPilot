@@ -27,7 +27,6 @@ from applypilot.database import init_db, get_connection, get_stats
 log = logging.getLogger(__name__)
 console = Console()
 
-
 # ---------------------------------------------------------------------------
 # Stage definitions
 # ---------------------------------------------------------------------------
@@ -59,38 +58,55 @@ _UPSTREAM: dict[str, str | None] = {
 # Individual stage runners
 # ---------------------------------------------------------------------------
 
-def _run_discover(workers: int = 1) -> dict:
+def _run_discover(workers: int = 1, limit: int = 0) -> dict:
     """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
     stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    remaining = limit
+
+    def _remaining_after(stats_dict: dict, current_remaining: int) -> int:
+        if limit <= 0:
+            return 0
+        added = int(stats_dict.get("new", 0) or 0) + int(stats_dict.get("total_new", 0) or 0)
+        return max(0, current_remaining - added)
 
     # JobSpy
     console.print("  [cyan]JobSpy full crawl...[/cyan]")
     try:
         from applypilot.discovery.jobspy import run_discovery
-        run_discovery()
-        stats["jobspy"] = "ok"
+        stats["jobspy"] = run_discovery(max_new_jobs=remaining)
+        if limit > 0:
+            remaining = _remaining_after(stats["jobspy"], remaining)
     except Exception as e:
         log.error("JobSpy crawl failed: %s", e)
         console.print(f"  [red]JobSpy error:[/red] {e}")
         stats["jobspy"] = f"error: {e}"
 
+    if limit > 0 and remaining == 0:
+        stats["workday"] = "skipped (discover limit reached)"
+        stats["smartextract"] = "skipped (discover limit reached)"
+        return stats
+
     # Workday corporate scraper
     console.print("  [cyan]Workday corporate scraper...[/cyan]")
     try:
         from applypilot.discovery.workday import run_workday_discovery
-        run_workday_discovery(workers=workers)
-        stats["workday"] = "ok"
+        stats["workday"] = run_workday_discovery(workers=workers, max_new_jobs=remaining)
+        if limit > 0:
+            remaining = _remaining_after(stats["workday"], remaining)
     except Exception as e:
         log.error("Workday scraper failed: %s", e)
         console.print(f"  [red]Workday error:[/red] {e}")
         stats["workday"] = f"error: {e}"
 
+    if limit > 0 and remaining == 0:
+        stats["smartextract"] = "skipped (discover limit reached)"
+        return stats
+
     # Smart extract
     console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
     try:
         from applypilot.discovery.smartextract import run_smart_extract
-        run_smart_extract(workers=workers)
-        stats["smartextract"] = "ok"
+        stats["smartextract"] = run_smart_extract(workers=workers, max_new_jobs=remaining)
     except Exception as e:
         log.error("Smart extract failed: %s", e)
         console.print(f"  [red]Smart extract error:[/red] {e}")
@@ -99,22 +115,22 @@ def _run_discover(workers: int = 1) -> dict:
     return stats
 
 
-def _run_enrich(workers: int = 1) -> dict:
+def _run_enrich(workers: int = 1, limit: int = 100) -> dict:
     """Stage: Detail enrichment — scrape full descriptions and apply URLs."""
     try:
         from applypilot.enrichment.detail import run_enrichment
-        run_enrichment(workers=workers)
+        run_enrichment(limit=limit, workers=workers)
         return {"status": "ok"}
     except Exception as e:
         log.error("Enrichment failed: %s", e)
         return {"status": f"error: {e}"}
 
 
-def _run_score(workers: int = 1) -> dict:
+def _run_score(workers: int = 1, limit: int = 0) -> dict:
     """Stage: LLM scoring — assign fit scores 1-10."""
     try:
         from applypilot.scoring.scorer import run_scoring
-        run_scoring(workers=workers)
+        run_scoring(limit=limit, workers=workers)
         return {"status": "ok"}
     except Exception as e:
         log.error("Scoring failed: %s", e)
@@ -145,11 +161,11 @@ def _run_cover(min_score: int = 7, validation_mode: str = "normal",
         return {"status": f"error: {e}"}
 
 
-def _run_pdf() -> dict:
+def _run_pdf(limit: int = 50) -> dict:
     """Stage: PDF conversion — convert tailored resumes and cover letters to PDF."""
     try:
         from applypilot.scoring.pdf import batch_convert
-        batch_convert()
+        batch_convert(limit=limit)
         return {"status": "ok"}
     except Exception as e:
         log.error("PDF conversion failed: %s", e)
@@ -264,7 +280,7 @@ def _run_stage_streaming(
     min_score: int = 7,
     workers: int = 1,
     validation_mode: str = "normal",
-    stage_limit: int = 20,
+    stage_limits: dict[str, int] | None = None,
 ) -> None:
     """Run a single stage in streaming mode: loop until upstream done + no work.
 
@@ -273,12 +289,16 @@ def _run_stage_streaming(
     and repeats until upstream is done and no pending work remains.
     """
     runner = _STAGE_RUNNERS[stage]
+    stage_limits = stage_limits or {}
+    current_stage_limit = stage_limits.get(stage, 0)
     kwargs: dict = {}
     if stage in ("tailor", "cover"):
         kwargs["min_score"] = min_score
         kwargs["validation_mode"] = validation_mode
         kwargs["workers"] = workers
-        kwargs["limit"] = stage_limit
+        kwargs["limit"] = current_stage_limit
+    if stage in ("discover", "enrich", "score", "pdf"):
+        kwargs["limit"] = current_stage_limit
     if stage in ("discover", "enrich", "score"):
         kwargs["workers"] = workers
 
@@ -308,6 +328,8 @@ def _run_stage_streaming(
             try:
                 runner(**kwargs)
                 passes += 1
+                if current_stage_limit > 0:
+                    break
             except Exception as e:
                 log.error("Stage '%s' error (pass %d): %s", stage, passes, e)
                 passes += 1
@@ -329,11 +351,12 @@ def _run_stage_streaming(
 # ---------------------------------------------------------------------------
 
 def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
-                    validation_mode: str = "normal", stage_limit: int = 20) -> dict:
+                    validation_mode: str = "normal", stage_limits: dict[str, int] | None = None) -> dict:
     """Execute stages one at a time (original behavior)."""
     results: list[dict] = []
     errors: dict[str, str] = {}
     pipeline_start = time.time()
+    stage_limits = stage_limits or {}
 
     for name in ordered:
         meta = STAGE_META[name]
@@ -347,11 +370,14 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
 
         try:
             kwargs: dict = {}
+            current_stage_limit = stage_limits.get(name, 0)
             if name in ("tailor", "cover"):
                 kwargs["min_score"] = min_score
                 kwargs["validation_mode"] = validation_mode
                 kwargs["workers"] = workers
-                kwargs["limit"] = stage_limit
+                kwargs["limit"] = current_stage_limit
+            if name in ("discover", "enrich", "score", "pdf"):
+                kwargs["limit"] = current_stage_limit
             if name in ("discover", "enrich", "score"):
                 kwargs["workers"] = workers
             result = runner(**kwargs)
@@ -385,11 +411,12 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
 
 
 def _run_streaming(ordered: list[str], min_score: int, workers: int = 1,
-                   validation_mode: str = "normal", stage_limit: int = 20) -> dict:
+                   validation_mode: str = "normal", stage_limits: dict[str, int] | None = None) -> dict:
     """Execute stages concurrently with DB as conveyor belt."""
     tracker = _StageTracker()
     stop_event = threading.Event()
     pipeline_start = time.time()
+    stage_limits = stage_limits or {}
 
     console.print(f"\n  [bold cyan]STREAMING MODE[/bold cyan] — stages run concurrently")
     console.print(f"  Poll interval: {_STREAM_POLL_INTERVAL}s\n")
@@ -407,7 +434,7 @@ def _run_streaming(ordered: list[str], min_score: int, workers: int = 1,
         start_times[name] = time.time()
         t = threading.Thread(
             target=_run_stage_streaming,
-            args=(name, tracker, stop_event, min_score, workers, validation_mode, stage_limit),
+            args=(name, tracker, stop_event, min_score, workers, validation_mode, stage_limits),
             name=f"stage-{name}",
             daemon=True,
         )
@@ -455,7 +482,7 @@ def run_pipeline(
     stream: bool = False,
     workers: int = 1,
     validation_mode: str = "normal",
-    stage_limit: int = 20,
+    stage_limits: dict[str, int] | None = None,
 ) -> dict:
     """Run pipeline stages.
 
@@ -465,7 +492,7 @@ def run_pipeline(
         dry_run: If True, preview stages without executing.
         stream: If True, run stages concurrently (streaming mode).
         workers: Number of parallel threads for discovery/enrichment/scoring/tailor/cover stages.
-        stage_limit: Maximum number of jobs for tailor and cover stages.
+        stage_limits: Per-stage job/file limits. 0 means unlimited.
 
     Returns:
         Dict with keys: stages (list of result dicts), errors (dict), elapsed (float).
@@ -474,6 +501,16 @@ def run_pipeline(
     load_env()
     ensure_dirs()
     init_db()
+
+    if stage_limits is None:
+        stage_limits = {
+            "discover": 0,
+            "enrich": 100,
+            "score": 0,
+            "tailor": 20,
+            "cover": 20,
+            "pdf": 50,
+        }
 
     # Resolve stages
     if stages is None:
@@ -489,7 +526,10 @@ def run_pipeline(
     ))
     console.print(f"  Min score:  {min_score}")
     console.print(f"  Workers:    {workers}")
-    console.print(f"  Stage max:  {stage_limit}")
+    limits_label = ", ".join(
+        f"{k}={v if v > 0 else 'unlimited'}" for k, v in stage_limits.items()
+    )
+    console.print(f"  Limits:     {limits_label}")
     console.print(f"  Validation: {validation_mode}")
     console.print(f"  Stages:     {' -> '.join(ordered)}")
 
@@ -509,11 +549,11 @@ def run_pipeline(
     if stream:
         result = _run_streaming(ordered, min_score, workers=workers,
                                 validation_mode=validation_mode,
-                                stage_limit=stage_limit)
+                                stage_limits=stage_limits)
     else:
         result = _run_sequential(ordered, min_score, workers=workers,
                                  validation_mode=validation_mode,
-                                 stage_limit=stage_limit)
+                                 stage_limits=stage_limits)
 
     # Summary table
     console.print(f"\n{'=' * 70}")

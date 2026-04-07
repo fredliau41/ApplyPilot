@@ -8,7 +8,7 @@ async def main():
     llm = ChatDeepSeek(
         base_url="https://api.deepseek.com/v1",
         model="deepseek-chat",
-        api_key="sk-cf465a18f9e1419693e9311b0ab0749b"
+        api_key="sk-123"
     )
     
     # Define the task

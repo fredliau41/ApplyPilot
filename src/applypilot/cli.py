@@ -90,6 +90,36 @@ def run(
         "-l",
         help="Maximum number of jobs to process for tailor/cover stages per run.",
     ),
+    discover_limit: Optional[int] = typer.Option(
+        None,
+        "--discover-limit",
+        help="Maximum new jobs to discover this run. 0 = unlimited (default behavior).",
+    ),
+    enrich_limit: Optional[int] = typer.Option(
+        None,
+        "--enrich-limit",
+        help="Maximum jobs to enrich this run.",
+    ),
+    score_limit: Optional[int] = typer.Option(
+        None,
+        "--score-limit",
+        help="Maximum jobs to score this run. 0 = unlimited.",
+    ),
+    tailor_limit: Optional[int] = typer.Option(
+        None,
+        "--tailor-limit",
+        help="Maximum jobs to tailor this run.",
+    ),
+    cover_limit: Optional[int] = typer.Option(
+        None,
+        "--cover-limit",
+        help="Maximum cover letters to generate this run.",
+    ),
+    pdf_limit: Optional[int] = typer.Option(
+        None,
+        "--pdf-limit",
+        help="Maximum text files to convert to PDF this run.",
+    ),
     workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discover/enrich/tailor/cover stages."),
     stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
@@ -139,6 +169,35 @@ def run(
         console.print("[red]Invalid --limit value:[/red] must be >= 1")
         raise typer.Exit(code=1)
 
+    per_stage_limit_options = {
+        "discover": discover_limit,
+        "enrich": enrich_limit,
+        "score": score_limit,
+        "tailor": tailor_limit,
+        "cover": cover_limit,
+        "pdf": pdf_limit,
+    }
+    for stage, value in per_stage_limit_options.items():
+        if value is not None and value < 0:
+            console.print(
+                f"[red]Invalid --{stage}-limit value:[/red] '{value}'. Must be >= 0."
+            )
+            raise typer.Exit(code=1)
+
+    # Defaults preserve existing behavior for all stages except discovery,
+    # which defaults to unlimited so long crawls can be explicitly capped.
+    stage_limits = {
+        "discover": 0,
+        "enrich": 100,
+        "score": 0,
+        "tailor": limit,
+        "cover": limit,
+        "pdf": 50,
+    }
+    for stage, value in per_stage_limit_options.items():
+        if value is not None:
+            stage_limits[stage] = value
+
     result = run_pipeline(
         stages=stage_list,
         min_score=min_score,
@@ -146,7 +205,7 @@ def run(
         stream=stream,
         workers=workers,
         validation_mode=validation,
-        stage_limit=limit,
+        stage_limits=stage_limits,
     )
 
     if result.get("errors"):

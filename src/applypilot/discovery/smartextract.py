@@ -50,11 +50,7 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 def _load_location_filter(search_cfg: dict | None = None):
     """Load location accept/reject lists from search config."""
-    if search_cfg is None:
-        search_cfg = config.load_search_config()
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
+    return config.load_location_filters(search_cfg)
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
@@ -62,11 +58,11 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     if not location:
         return True
     loc = location.lower()
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
-        return True
     for r in reject:
         if r.lower() in loc:
             return False
+    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
+        return True
     for a in accept:
         if a.lower() in loc:
             return True
@@ -94,14 +90,23 @@ def _store_jobs_filtered(
     reject_locs: list[str],
     title_includes: list[str] | None = None,
     title_excludes: list[str] | None = None,
-) -> tuple[int, int]:
-    """Store jobs with location and title filtering. Returns (new, existing)."""
+    max_new_jobs: int = 0,
+) -> tuple[int, int, bool]:
+    """Store jobs with location/title filtering.
+
+    Returns:
+        (new, existing, limit_reached)
+    """
     now = datetime.now(timezone.utc).isoformat()
     new = 0
     existing = 0
     filtered = 0
 
     for job in jobs:
+        if max_new_jobs > 0 and new >= max_new_jobs:
+            conn.commit()
+            return new, existing, True
+
         url = job.get("url")
         if not url:
             continue
@@ -128,7 +133,7 @@ def _store_jobs_filtered(
     if filtered:
         log.info("Filtered %d jobs (wrong location)", filtered)
     conn.commit()
-    return new, existing
+    return new, existing, False
 
 
 # -- Page intelligence collector ---------------------------------------------
@@ -1039,6 +1044,7 @@ def _run_all(
     accept_locs: list[str],
     reject_locs: list[str],
     workers: int = 1,
+    max_new_jobs: int = 0,
 ) -> dict:
     """Run smart extract on all targets.
 
@@ -1053,20 +1059,42 @@ def _run_all(
     results: list[dict] = []
     total_new = 0
     total_existing = 0
+    limit_hit = False
+
+    if max_new_jobs > 0 and workers > 1:
+        # Precise global caps need deterministic sequential processing.
+        log.info("max_new_jobs set; forcing workers=1 for strict SmartExtract cap")
+        workers = 1
 
     def _process_result(r: dict, target: dict) -> None:
-        nonlocal total_new, total_existing
+        nonlocal total_new, total_existing, limit_hit
         jobs = r.get("jobs", [])
         if jobs:
             t_inc = target.get("title_includes", [])
             t_exc = target.get("title_excludes", [])
-            new, existing = _store_jobs_filtered(conn, jobs, target["name"],
-                                                  r.get("strategy", "?"),
-                                                  accept_locs, reject_locs,
-                                                  t_inc, t_exc)
+            remaining = 0
+            if max_new_jobs > 0:
+                remaining = max(0, max_new_jobs - total_new)
+                if remaining == 0:
+                    limit_hit = True
+                    return
+
+            new, existing, reached = _store_jobs_filtered(
+                conn,
+                jobs,
+                target["name"],
+                r.get("strategy", "?"),
+                accept_locs,
+                reject_locs,
+                t_inc,
+                t_exc,
+                max_new_jobs=remaining,
+            )
             total_new += new
             total_existing += existing
             log.info("DB: +%d new, %d already existed", new, existing)
+            if reached:
+                limit_hit = True
 
     if workers > 1 and len(targets) > 1:
         # Parallel mode
@@ -1080,9 +1108,15 @@ def _run_all(
                 r = future.result()
                 results.append(r)
                 _process_result(r, target)
+                if limit_hit:
+                    break
     else:
         # Sequential mode (default)
         for i, target in enumerate(targets):
+            if max_new_jobs > 0 and total_new >= max_new_jobs:
+                limit_hit = True
+                break
+
             label = target["name"]
             if target.get("query"):
                 label = f"{target['name']} [{target['query']}]"
@@ -1091,6 +1125,8 @@ def _run_all(
             r = _run_one_site(target["name"], target["url"])
             results.append(r)
             _process_result(r, target)
+            if limit_hit:
+                break
 
     # Summary
     for r in results:
@@ -1103,6 +1139,8 @@ def _run_all(
 
     passed = sum(1 for r in results if r["status"] == "PASS")
     log.info("%d/%d PASS", passed, len(results))
+    if limit_hit:
+        log.info("SmartExtract discovery limit reached (%d new jobs).", max_new_jobs)
 
     return {"total_new": total_new, "total_existing": total_existing,
             "passed": passed, "total": len(results)}
@@ -1113,6 +1151,7 @@ def _run_all(
 def run_smart_extract(
     sites: list[dict] | None = None,
     workers: int = 1,
+    max_new_jobs: int = 0,
 ) -> dict:
     """Main entry point for AI-powered smart extraction.
 
@@ -1122,6 +1161,8 @@ def run_smart_extract(
     Args:
         sites: Override the site list. If None, loads from YAML.
         workers: Number of parallel threads for site scraping. Default 1 (sequential).
+        max_new_jobs: Maximum number of new jobs to insert in this run.
+                      0 means unlimited.
 
     Returns:
         Dict with stats: total_new, total_existing, passed, total.
@@ -1140,4 +1181,4 @@ def run_smart_extract(
     log.info("Sites: %d searchable, %d static | Total targets: %d (workers=%d)",
              search_sites, static_sites, len(targets), workers)
 
-    return _run_all(targets, accept_locs, reject_locs, workers=workers)
+    return _run_all(targets, accept_locs, reject_locs, workers=workers, max_new_jobs=max_new_jobs)
