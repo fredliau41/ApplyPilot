@@ -72,7 +72,11 @@ def _build_profile_summary(profile: dict) -> str:
         lines.append(f"Education: {exp['education_level']}")
 
     # Availability
-    lines.append(f"Available: {avail.get('earliest_start_date', 'Immediately')}")
+    lines.append(f"Available From: {avail.get('earliest_start_date', 'Immediately')}")
+    if avail.get("end_date"):
+        lines.append(f"Available Until: {avail['end_date']}")
+    if avail.get("available_duration"):
+        lines.append(f"Availability Duration: {avail['available_duration']}")
 
     # Standard responses
     lines.extend([
@@ -163,11 +167,22 @@ def _build_screening_section(profile: dict) -> str:
     city = personal.get("city", "their city")
     years = exp.get("years_of_experience_total", "multiple")
     target_role = exp.get("target_role", personal.get("current_job_title", "software engineer"))
-    work_auth = profile["work_authorization"]
+    avail = profile.get("availability", {})
+    start_date = avail.get("earliest_start_date", "Immediately")
+    end_date = avail.get("end_date")
+    duration = avail.get("available_duration")
+
+    availability_line = f"- Availability questions: use exact profile dates. Earliest start = {start_date}."
+    if end_date:
+        availability_line += f" End date = {end_date}."
+    if duration:
+        availability_line += f" Duration = {duration}."
 
     return f"""== SCREENING ==
 - Facts (work auth, legal, background, location) must match profile exactly.
 - Candidate context: {target_role}, {years} years, based in {city}.
+- Apply phase priority: when forms ask for availability/start/end/duration, answer using the exact profile values.
+{availability_line}
 - Skills questions: answer confidently and align with resume/domain.
 - Open text answers: 2-3 engaging, specific, confident sentences tied to this role and resume outcomes.
 - EEO/demographics: prefer "Decline to self-identify" / "Prefer not to say"."""
