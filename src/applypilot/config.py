@@ -132,6 +132,26 @@ def load_location_filters(search_cfg: dict | None = None) -> tuple[list[str], li
 
     return accept or [], reject or []
 
+
+def load_company_filters(search_cfg: dict | None = None) -> tuple[list[str], list[str]]:
+    """Load company accept/reject patterns from search config.
+
+    Supports both legacy top-level keys and the nested `company:` mapping.
+    """
+    if search_cfg is None:
+        search_cfg = load_search_config()
+
+    company_cfg = search_cfg.get("company", {}) or {}
+    accept = search_cfg.get("company_accept")
+    reject = search_cfg.get("company_reject")
+
+    if accept is None:
+        accept = company_cfg.get("accept_patterns", [])
+    if reject is None:
+        reject = company_cfg.get("reject_patterns", [])
+
+    return accept or [], reject or []
+
 def normalize_queries(raw_queries: list) -> list:
     """Normalize queries from searches.yaml into a flat list.
     Supports both flat lists and grouped by tier and local includes/excludes.
@@ -320,4 +340,28 @@ def title_matches(title: str | None, includes: list[str], excludes: list[str]) -
     if exc and any(e in t for e in exc):
         return False
         
+    return True
+
+
+def company_matches(company: str | None, accepts: list[str], rejects: list[str]) -> bool:
+    """Check if a company passes accept/reject rules (case-insensitive partial match).
+
+    Semantics:
+    - Reject patterns are always applied first.
+    - If accepts is empty, allow all non-rejected companies.
+    - If accepts has values, the company must match at least one accept pattern.
+    """
+    if not company or str(company).strip().lower() == "nan":
+        return not bool(accepts)
+
+    c = str(company).lower()
+    inc = [str(x).lower() for x in accepts if x]
+    exc = [str(x).lower() for x in rejects if x]
+
+    if exc and any(e in c for e in exc):
+        return False
+
+    if inc and not any(i in c for i in inc):
+        return False
+
     return True

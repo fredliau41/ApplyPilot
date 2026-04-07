@@ -53,6 +53,11 @@ def _load_location_filter(search_cfg: dict | None = None):
     return config.load_location_filters(search_cfg)
 
 
+def _load_company_filter(search_cfg: dict | None = None):
+    """Load company accept/reject lists from search config."""
+    return config.load_company_filters(search_cfg)
+
+
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter."""
     if not location:
@@ -88,6 +93,8 @@ def _store_jobs_filtered(
     strategy: str,
     accept_locs: list[str],
     reject_locs: list[str],
+    accept_companies: list[str],
+    reject_companies: list[str],
     title_includes: list[str] | None = None,
     title_excludes: list[str] | None = None,
     max_new_jobs: int = 0,
@@ -114,6 +121,10 @@ def _store_jobs_filtered(
         if not _location_ok(job.get("location"), accept_locs, reject_locs):
             filtered += 1
             continue
+
+        if not config.company_matches(job.get("company"), accept_companies, reject_companies):
+            filtered += 1
+            continue
             
         if not config.title_matches(job.get("title"), title_includes or [], title_excludes or []):
             filtered += 1
@@ -131,7 +142,7 @@ def _store_jobs_filtered(
             existing += 1
 
     if filtered:
-        log.info("Filtered %d jobs (wrong location)", filtered)
+        log.info("Filtered %d jobs (location/company/title rules)", filtered)
     conn.commit()
     return new, existing, False
 
@@ -1043,6 +1054,8 @@ def _run_all(
     targets: list[dict],
     accept_locs: list[str],
     reject_locs: list[str],
+    accept_companies: list[str],
+    reject_companies: list[str],
     workers: int = 1,
     max_new_jobs: int = 0,
 ) -> dict:
@@ -1086,6 +1099,8 @@ def _run_all(
                 r.get("strategy", "?"),
                 accept_locs,
                 reject_locs,
+                accept_companies,
+                reject_companies,
                 t_inc,
                 t_exc,
                 max_new_jobs=remaining,
@@ -1169,6 +1184,7 @@ def run_smart_extract(
     """
     search_cfg = config.load_search_config()
     accept_locs, reject_locs = _load_location_filter(search_cfg)
+    accept_companies, reject_companies = _load_company_filter(search_cfg)
 
     targets = build_scrape_targets(sites=sites, search_cfg=search_cfg)
 
@@ -1181,4 +1197,12 @@ def run_smart_extract(
     log.info("Sites: %d searchable, %d static | Total targets: %d (workers=%d)",
              search_sites, static_sites, len(targets), workers)
 
-    return _run_all(targets, accept_locs, reject_locs, workers=workers, max_new_jobs=max_new_jobs)
+    return _run_all(
+        targets,
+        accept_locs,
+        reject_locs,
+        accept_companies,
+        reject_companies,
+        workers=workers,
+        max_new_jobs=max_new_jobs,
+    )

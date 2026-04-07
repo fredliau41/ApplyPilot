@@ -224,6 +224,10 @@ def _setup_searches() -> None:
         "include_titles_with: []",
         "exclude_titles_with: []",
         "",
+        "company:",
+        "  accept_patterns: []",
+        "  reject_patterns: []",
+        "",
         "queries:",
     ]
     

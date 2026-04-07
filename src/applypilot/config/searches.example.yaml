@@ -80,6 +80,14 @@ location:
     - "India"
     - "Philippines"
 
+# Company filtering -- if accept_patterns is empty, all companies are allowed
+# except those matching reject_patterns.
+# If accept_patterns has values, only matching companies are kept.
+company:
+  accept_patterns: []
+  reject_patterns:
+    - "Example Bad Company"
+
 # Country for Indeed/LinkedIn/Google Jobs searches
 country: "USA"
 

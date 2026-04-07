@@ -45,6 +45,11 @@ def _load_location_filter(search_cfg: dict | None = None):
     return config.load_location_filters(search_cfg)
 
 
+def _load_company_filter(search_cfg: dict | None = None):
+    """Load company accept/reject lists from search config."""
+    return config.load_company_filters(search_cfg)
+
+
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter."""
     if not location:
@@ -342,12 +347,18 @@ def _process_one(
     location_filter: bool,
     accept_locs: list[str],
     reject_locs: list[str],
+    accept_companies: list[str],
+    reject_companies: list[str],
     title_includes: list[str] | None = None,
     title_excludes: list[str] | None = None,
     max_new_jobs: int = 0,
 ) -> dict:
     """Search one employer, fetch details, store results w/ filters."""
     emp = employers[employer_key]
+
+    if not config.company_matches(emp.get("name"), accept_companies, reject_companies):
+        return {"employer": emp["name"], "query": search_text,
+                "found": 0, "new": 0, "existing": 0}
 
     try:
         jobs = search_employer(
@@ -399,6 +410,8 @@ def scrape_employers(
     max_results: int = 0,
     accept_locs: list[str] | None = None,
     reject_locs: list[str] | None = None,
+    accept_companies: list[str] | None = None,
+    reject_companies: list[str] | None = None,
     title_includes: list[str] | None = None,
     title_excludes: list[str] | None = None,
     workers: int = 1,
@@ -415,6 +428,10 @@ def scrape_employers(
         accept_locs = []
     if reject_locs is None:
         reject_locs = []
+    if accept_companies is None:
+        accept_companies = []
+    if reject_companies is None:
+        reject_companies = []
 
     # Ensure DB schema
     init_db()
@@ -441,6 +458,7 @@ def scrape_employers(
                 pool.submit(
                     _process_one, key, employers, search_text,
                     location_filter, accept_locs, reject_locs,
+                    accept_companies, reject_companies,
                     title_includes, title_excludes, 0,
                 ): key
                 for key in valid_keys
@@ -472,6 +490,7 @@ def scrape_employers(
             result = _process_one(
                 key, employers, search_text,
                 location_filter, accept_locs, reject_locs,
+                accept_companies, reject_companies,
                 title_includes, title_excludes,
                 remaining,
             )
@@ -530,6 +549,7 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1, max_n
     raw_queries = search_cfg.get("queries", [])
     queries_cfg = config.normalize_queries(raw_queries)
     accept_locs, reject_locs = _load_location_filter(search_cfg)
+    accept_companies, reject_companies = _load_company_filter(search_cfg)
 
     # Default to tier 1-2 queries for workday scraping
     max_tier = search_cfg.get("workday_max_tier", 2)
@@ -580,6 +600,8 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1, max_n
             location_filter=location_filter,
             accept_locs=accept_locs,
             reject_locs=reject_locs,
+            accept_companies=accept_companies,
+            reject_companies=reject_companies,
             title_includes=local_inc,
             title_excludes=local_exc,
             workers=workers,

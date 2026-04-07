@@ -84,6 +84,11 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
     return config.load_location_filters(search_cfg)
 
 
+def _load_company_config(search_cfg: dict) -> tuple[list[str], list[str]]:
+    """Extract accept/reject company lists from search config."""
+    return config.load_company_filters(search_cfg)
+
+
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
     """Check if a job location passes the user's location filter.
 
@@ -109,6 +114,11 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 
     # No match -- reject unknown
     return False
+
+
+def _company_ok(company: str | None, accept: list[str], reject: list[str]) -> bool:
+    """Check if a job company passes the user's company filter."""
+    return config.company_matches(company, accept, reject)
 
 
 # -- DB storage (JobSpy DataFrame -> SQLite) ---------------------------------
@@ -203,6 +213,8 @@ def _run_one_search(
     max_retries: int,
     accept_locs: list[str],
     reject_locs: list[str],
+    accept_companies: list[str],
+    reject_companies: list[str],
     glassdoor_map: dict,
     global_includes: list[str],
     global_excludes: list[str],
@@ -285,6 +297,9 @@ def _run_one_search(
     df = df[df.apply(lambda row: _location_ok(
         str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None,
         accept_locs, reject_locs,
+    ) and _company_ok(
+        str(row.get("company", "")) if str(row.get("company", "")) != "nan" else None,
+        accept_companies, reject_companies,
     ) and config.title_matches(
         row.get("title"),
         global_includes + (search.get("include_titles_with", []) or []),
@@ -302,7 +317,7 @@ def _run_one_search(
 
     msg = f"[{label}] {before} results -> {new} new, {existing} dupes"
     if filtered:
-        msg += f", {filtered} filtered (location/title)"
+        msg += f", {filtered} filtered (location/company/title)"
     log.info(msg)
 
     return {
@@ -409,6 +424,7 @@ def _full_crawl(
     defaults = search_cfg.get("defaults", {})
     glassdoor_map = search_cfg.get("glassdoor_location_map", {})
     accept_locs, reject_locs = _load_location_config(search_cfg)
+    accept_companies, reject_companies = _load_company_config(search_cfg)
     
     global_includes = search_cfg.get("include_titles_with", []) or []
     global_excludes = search_cfg.get("exclude_titles_with", []) or []
@@ -463,7 +479,9 @@ def _full_crawl(
         result = _run_one_search(
             s, sites, results_per_site, hours_old,
             proxy_config, defaults, max_retries,
-            accept_locs, reject_locs, glassdoor_map,
+            accept_locs, reject_locs,
+            accept_companies, reject_companies,
+            glassdoor_map,
             global_includes, global_excludes,
             max_new_jobs=remaining,
         )
