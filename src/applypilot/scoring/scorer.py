@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from applypilot.config import RESUME_PATH, load_profile
@@ -101,7 +102,7 @@ def score_job(resume_text: str, job: dict) -> dict:
         return {"score": 0, "keywords": "", "reasoning": f"LLM error: {e}"}
 
 
-def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
+def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1) -> dict:
     """Score unscored jobs that have full descriptions.
 
     Args:
@@ -111,6 +112,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     Returns:
         {"scored": int, "errors": int, "elapsed": float, "distribution": list}
     """
+    workers = max(1, workers)
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
 
@@ -131,38 +133,53 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
 
-    log.info("Scoring %d jobs sequentially...", len(jobs))
+    log.info("Scoring %d jobs with %d worker(s)...", len(jobs), workers)
     t0 = time.time()
     completed = 0
     errors = 0
-    results: list[dict] = []
+    now = datetime.now(timezone.utc).isoformat()
 
-    for job in jobs:
+    def _score_one(job: dict) -> dict:
         result = score_job(resume_text, job)
-        result["url"] = job["url"]
-        completed += 1
+        return {
+            "url": job["url"],
+            "title": job.get("title", "?"),
+            **result,
+        }
 
+    if workers == 1:
+        result_iter = (_score_one(job) for job in jobs)
+    else:
+        pool = ThreadPoolExecutor(max_workers=min(workers, len(jobs)))
+        futures = [pool.submit(_score_one, job) for job in jobs]
+        result_iter = (future.result() for future in as_completed(futures))
+
+    for result in result_iter:
+        completed += 1
         if result["score"] == 0:
             errors += 1
 
-        results.append(result)
+        conn.execute(
+            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+            (result["score"], f"{result['keywords']}\n{result['reasoning']}", now, result["url"]),
+        )
+        conn.commit()
 
         log.info(
             "[%d/%d] score=%d  %s",
-            completed, len(jobs), result["score"], job.get("title", "?")[:60],
+            completed, len(jobs), result["score"], result["title"][:60],
         )
 
-    # Write scores to DB
-    now = datetime.now(timezone.utc).isoformat()
-    for r in results:
-        conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-            (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
-        )
-    conn.commit()
+    if workers > 1:
+        pool.shutdown(wait=True)
 
     elapsed = time.time() - t0
-    log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
+    log.info(
+        "Done: %d scored in %.1fs (%.1f jobs/sec)",
+        completed,
+        elapsed,
+        completed / elapsed if elapsed > 0 else 0,
+    )
 
     # Score distribution
     dist = conn.execute("""
@@ -173,7 +190,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     distribution = [(row[0], row[1]) for row in dist]
 
     return {
-        "scored": len(results),
+        "scored": completed,
         "errors": errors,
         "elapsed": elapsed,
         "distribution": distribution,

@@ -110,11 +110,11 @@ def _run_enrich(workers: int = 1) -> dict:
         return {"status": f"error: {e}"}
 
 
-def _run_score() -> dict:
+def _run_score(workers: int = 1) -> dict:
     """Stage: LLM scoring — assign fit scores 1-10."""
     try:
         from applypilot.scoring.scorer import run_scoring
-        run_scoring()
+        run_scoring(workers=workers)
         return {"status": "ok"}
     except Exception as e:
         log.error("Scoring failed: %s", e)
@@ -279,7 +279,7 @@ def _run_stage_streaming(
         kwargs["validation_mode"] = validation_mode
         kwargs["workers"] = workers
         kwargs["limit"] = stage_limit
-    if stage in ("discover", "enrich"):
+    if stage in ("discover", "enrich", "score"):
         kwargs["workers"] = workers
 
     upstream = _UPSTREAM[stage]
@@ -352,7 +352,7 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
                 kwargs["validation_mode"] = validation_mode
                 kwargs["workers"] = workers
                 kwargs["limit"] = stage_limit
-            if name in ("discover", "enrich"):
+            if name in ("discover", "enrich", "score"):
                 kwargs["workers"] = workers
             result = runner(**kwargs)
             elapsed = time.time() - t0
@@ -464,7 +464,7 @@ def run_pipeline(
         min_score: Minimum fit score for tailor/cover stages.
         dry_run: If True, preview stages without executing.
         stream: If True, run stages concurrently (streaming mode).
-        workers: Number of parallel threads for discovery/enrichment/tailor/cover stages.
+        workers: Number of parallel threads for discovery/enrichment/scoring/tailor/cover stages.
         stage_limit: Maximum number of jobs for tailor and cover stages.
 
     Returns:
