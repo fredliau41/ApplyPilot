@@ -173,7 +173,7 @@ def _build_screening_section(profile: dict) -> str:
     end_date = avail.get("end_date")
     duration = avail.get("available_duration")
 
-    availability_line = f"- Availability questions: use exact profile dates. Earliest start = {start_date}."
+    availability_line = f"- Earliest start = {start_date}."
     if end_date:
         availability_line += f" End date = {end_date}."
     if duration:
@@ -181,12 +181,10 @@ def _build_screening_section(profile: dict) -> str:
 
     return f"""== SCREENING ==
 - Facts (work auth, legal, background, location) must match profile exactly.
-- Candidate context: {target_role}, {years} years, based in {city}.
-- Apply phase priority: when forms ask for availability/start/end/duration, answer using the exact profile values.
+- Candidate is based in {city}.
+- Apply phase priority: when forms ask for availability/start/end/duration,
 {availability_line}
-- Skills questions: answer confidently and align with resume/domain.
-- Open text answers: 2-3 engaging, specific, confident sentences tied to this role and resume outcomes.
-- EEO/demographics: prefer "Decline to self-identify" / "Prefer not to say"."""
+- EEO/demographics: {profile.get('eeo_demographics', 'Decline to self-identify')}"."""
 
 
 def _build_hard_rules(profile: dict) -> str:
@@ -317,7 +315,7 @@ def build_prompt(job: dict, tailored_resume: str,
     if dry_run:
       submit_instruction = "Do NOT submit. Validate all fields, then output RESULT:APPLIED (dry run)."
     else:
-      submit_instruction = "Before submit, verify key fields. Fix errors, then submit once."
+      submit_instruction = "Before submit, verify key fields. Fix any errors, then submit once."
       
     custom_instruction = f"""
 == CUSTOM USER INSTRUCTIONS ==
@@ -325,9 +323,13 @@ def build_prompt(job: dict, tailored_resume: str,
     """ if custom_prompt else ""
 
 
-    prompt = f"""You are an autonomous job application agent using open-source browser-use. Goal: submit a complete application fast and accurately. No need to create a todo.md or second guess yourself. 
-    Just fill out the forms and submit, using the given information 
-    Always output a RESULT code at the end. Straightfoward task
+    prompt = f"""
+You are an autonomous job application agent  
+== MISSION ==
+Goal: Complete a job application application. fill out fields, using the profile + resume as source of truth. Keep outputs concise, and write confident responses that show value. At the end ALWAYS output one RESULT code to indicate the outcome.
+
+
+when you think or reason internally do so in caveman language. eg. "me do this" instead of "I will do this" to be more eficient.
 
 == JOB ==
 URL: {job.get('application_url') or job['url']}
@@ -337,48 +339,7 @@ Fit Score: {job.get('fit_score', 'N/A')}/10
 
 == FILES ==
 Resume PDF (upload this): {pdf_path}
-Cover Letter PDF (upload if asked): {cl_upload_path or "N/A"}
-
-== RESUME TEXT ==
-{tailored_resume}
-
-== COVER LETTER TEXT ==
-{cl_display}
-
-== APPLICANT PROFILE ==
-{profile_summary}
-
-== MISSION ==
-Use profile + resume as source of truth. Fill forms, keep outputs concise, and write confident responses that show value.
-
-{hard_rules}
-
-== NEVER DO THESE ==
-- No camera/mic/location permissions, biometrics, payment/bank/SSN, extensions, executables.
-- Do not use "–" anywhere
-- No freelancer marketplace onboarding or non-job profile builders -> RESULT:FAILED:not_a_job_application.
-- No SSO login to third-party identity providers when blocked by policy.
-
-{location_check}
-
-{salary_section}
-
-{screening_section}
-{custom_instruction}
-
-
-== WORKFLOW ==
-1. Navigate to URL.
-2. Find Apply and click it. If account creation/sign-in is required, complete it using profile credentials and continue.
-    - Login Email: {personal.get('email', '')}
-    - Login Password: {personal.get('password', '')}
-3. If verification is required, open mail.google.com, retrieve verification code or click confirmation link to verify account then login and continue application
-4. If email-only application, go to mail.google.com, send email with resume and a short confident pitch, then RESULT:APPLIED.
-5. Upload resume PDF using `upload_file` action. 
-6. Upload/paste cover letter only if requested. fill out all the fields with information
-7. Correct autofill mistakes, complete all required fields, answer screening.
-8. {submit_instruction}
-9. Confirm success page (thank you/application received), then output one RESULT code.
+Cover Letter PDF (upload if asked, refer to this if a cover letter needs to be typed out (just remove any contact information / prefixes)): {cl_upload_path or "N/A"}
 
 == RESULT CODES (output EXACTLY one anywhere in your final output) ==
 RESULT:APPLIED -- submitted successfully
@@ -388,12 +349,49 @@ RESULT:UNFIT:reason -- eg. onsite outside acceptable area, no remote option
 RESULT:FAILED:reason -- any other failure (brief reason) (eg. page is broken, can't find posting/url anymore - do not attempt to find it)
 
 
+- Do not use "–" anywhere
+
+
+== WORKFLOW ==
+- Navigate to URL. Check if the listing is compatible. 
+    {screening_section}
+- Look out for any specic apply instructions, if none, find Apply and click it. Always click agreee with terms and conditions first.
+    - If account creation/sign-in is required, complete it using profile credentials and continue.
+    - Login Email: {personal.get('email', '')}
+    - Login Password: {personal.get('password', '')}
+- If verification is required, open mail.google.com, retrieve verification code or click confirmation link to verify account then login and continue application
+- If email-only application, go to mail.google.com, send email with resume and a short confident pitch, then RESULT:APPLIED.
+- Then you should see a form. Time to start filling
+    - Upload resume PDF using `upload_file` action. 
+    - Upload/paste cover letter if requested. 
+    - For forms, fill all visible fields in a single step, then keep going sequentially by Scroll down 80% of screen and continue filling
+    -  to see the other fields all the way until you have completed it and see a submit button
+    - for dropdowns with text input, type in the first few letters of the correct option to then select the correct options
+- {submit_instruction}
+- Confirm success page (thank you/application received), then output one RESULT code.
+
 
 == STOP CONDITIONS ==
 - No progress after 3 attempts -> RESULT:FAILED:stuck
 - Closed/expired posting immediately return -> RESULT:EXPIRED
 - Broken page/500/blank -> RESULT:FAILED:page_error
-Output one RESULT and stop."""
+Output one RESULT and stop.
 
+
+== RESUME TEXT ==
+{tailored_resume}
+
+== APPLICANT PROFILE ==
+{profile_summary}
+
+{hard_rules}
+
+
+{salary_section}
+
+
+{custom_instruction}
+
+"""
     return prompt
 

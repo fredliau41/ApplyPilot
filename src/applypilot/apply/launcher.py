@@ -24,7 +24,7 @@ from rich.console import Console
 from rich.live import Live
 
 from applypilot import config
-from applypilot.database import get_connection
+from applypilot.database import close_connection, get_connection
 from applypilot.apply import chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.chrome import (
     BASE_CDP_PORT,
@@ -170,6 +170,8 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
     except Exception:
         conn.rollback()
         raise
+    finally:
+        close_connection()
 
 
 def mark_result(url: str, status: str, error: str | None = None,
@@ -177,33 +179,39 @@ def mark_result(url: str, status: str, error: str | None = None,
                 task_id: str | None = None) -> None:
     """Update a job's apply status in the database."""
     conn = get_connection()
-    now = datetime.now(timezone.utc).isoformat()
-    if status == "applied":
-        conn.execute("""
-            UPDATE jobs SET apply_status = 'applied', applied_at = ?,
-                           apply_error = NULL, agent_id = NULL,
-                           apply_duration_ms = ?, apply_task_id = ?
-            WHERE url = ?
-        """, (now, duration_ms, task_id, url))
-    else:
-        attempts = 99 if permanent else "COALESCE(apply_attempts, 0) + 1"
-        conn.execute(f"""
-            UPDATE jobs SET apply_status = ?, apply_error = ?,
-                           apply_attempts = {attempts}, agent_id = NULL,
-                           apply_duration_ms = ?, apply_task_id = ?
-            WHERE url = ?
-        """, (status, error or "unknown", duration_ms, task_id, url))
-    conn.commit()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        if status == "applied":
+            conn.execute("""
+                UPDATE jobs SET apply_status = 'applied', applied_at = ?,
+                               apply_error = NULL, agent_id = NULL,
+                               apply_duration_ms = ?, apply_task_id = ?
+                WHERE url = ?
+            """, (now, duration_ms, task_id, url))
+        else:
+            attempts = 99 if permanent else "COALESCE(apply_attempts, 0) + 1"
+            conn.execute(f"""
+                UPDATE jobs SET apply_status = ?, apply_error = ?,
+                               apply_attempts = {attempts}, agent_id = NULL,
+                               apply_duration_ms = ?, apply_task_id = ?
+                WHERE url = ?
+            """, (status, error or "unknown", duration_ms, task_id, url))
+        conn.commit()
+    finally:
+        close_connection()
 
 
 def release_lock(url: str) -> None:
     """Release the in_progress lock without changing status."""
     conn = get_connection()
-    conn.execute(
-        "UPDATE jobs SET apply_status = NULL, agent_id = NULL WHERE url = ? AND apply_status = 'in_progress'",
-        (url,),
-    )
-    conn.commit()
+    try:
+        conn.execute(
+            "UPDATE jobs SET apply_status = NULL, agent_id = NULL WHERE url = ? AND apply_status = 'in_progress'",
+            (url,),
+        )
+        conn.commit()
+    finally:
+        close_connection()
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +394,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             worker_id=worker_id
         )
 
+        available_file_paths = [
+            str(path.resolve())
+            for path in worker_dir.iterdir()
+            if path.is_file()
+        ]
+
         update_state(worker_id, status="applying", job_title=job["title"],
                      company=job.get("site", ""), score=job.get("fit_score", 0),
                      start_time=time.time(), actions=0, last_action="starting")
@@ -431,10 +445,16 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             llm=llm,
             browser=browser,
             use_vision=use_vision,
+            available_file_paths=available_file_paths,
             register_new_step_callback=new_step_callback,
             use_judge=False,  # Disable judge to speed up execution and reduce token usage
             # Enable flash mode for faster interactions (may cause more flakiness on some sites
-            max_failures=4
+            max_failures=3,
+            loop_detection_window=10,
+            enable_planning=True,
+            message_compaction=True
+            
+            
         )
 
         async def run_agent():
@@ -495,21 +515,21 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                         return reason, duration_ms
                     add_event(
                         f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
-                    update_state(worker_id, status="failed",
+                    update_state(worker_id,
                                  last_action=f"FAILED: {reason[:25]}")
                     return f"failed:{reason}", duration_ms
             return "failed:unknown", duration_ms
 
         # fallback
         add_event(f"[W{worker_id}] NO RESULT ({elapsed}s)")
-        update_state(worker_id, status="failed",
+        update_state(worker_id,
                      last_action=f"no result ({elapsed}s)")
         return "failed:no_result_line", duration_ms
 
     except Exception as e:
         duration_ms = int((time.time() - start) * 1000)
         add_event(f"[W{worker_id}] ERROR: {str(e)[:40]}")
-        update_state(worker_id, status="failed",
+        update_state(worker_id,
                      last_action=f"ERROR: {str(e)[:25]}")
         return f"failed:{str(e)[:100]}", duration_ms
     finally:
@@ -621,7 +641,9 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                             permanent=_is_permanent_failure(result),
                             duration_ms=duration_ms)
                 failed += 1
-                update_state(worker_id, jobs_failed=failed,
+                update_state(worker_id, status="failed",
+                             last_action=f"FAILED: {reason[:25]}",
+                             jobs_failed=failed,
                              jobs_done=applied + failed)
 
         except KeyboardInterrupt:
@@ -635,7 +657,9 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             add_event(f"[W{worker_id}] Launcher error: {str(e)[:40]}")
             release_lock(job["url"])
             failed += 1
-            update_state(worker_id, jobs_failed=failed)
+            update_state(worker_id, status="failed",
+                         last_action=f"launcher error: {str(e)[:25]}",
+                         jobs_failed=failed)
         finally:
             if chrome_proc:
                 cleanup_worker(worker_id, chrome_proc)
