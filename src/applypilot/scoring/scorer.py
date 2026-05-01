@@ -30,6 +30,8 @@ SCORING CRITERIA:
 - 3-4: Weak match. Significant skill gaps, would need substantial ramp-up.
 - 1-2: Poor match. Completely different field or experience level.
 
+- 0: fails requirement
+
 IMPORTANT FACTORS:
 - Weight technical skills heavily (programming languages, frameworks, tools)
 - Consider transferable experience (automation, scripting, API work)
@@ -37,7 +39,7 @@ IMPORTANT FACTORS:
 - Be realistic about experience level vs. job requirements (years of experience, seniority)
 
 RESPOND IN EXACTLY THIS FORMAT (no other text):
-SCORE: [1-10]
+SCORE: [0-10]
 KEYWORDS: [comma-separated ATS keywords from the job description that match or could match the candidate]
 REASONING: [2-3 sentences explaining the score]"""
 
@@ -60,7 +62,7 @@ def _parse_score_response(response: str) -> dict:
         if line.startswith("SCORE:"):
             try:
                 score = int(re.search(r"\d+", line).group())
-                score = max(1, min(10, score))
+                score = max(0, min(10, score))
             except (AttributeError, ValueError):
                 score = 0
         elif line.startswith("KEYWORDS:"):
@@ -71,12 +73,13 @@ def _parse_score_response(response: str) -> dict:
     return {"score": score, "keywords": keywords, "reasoning": reasoning}
 
 
-def score_job(resume_text: str, job: dict) -> dict:
+def score_job(resume_text: str, job: dict, filter_req: str = "") -> dict:
     """Score a single job against the resume.
 
     Args:
         resume_text: The candidate's full resume text.
         job: Job dict with keys: title, site, location, full_description.
+        filter_req: Additional requirement that must be fulfilled (returns 0 if not).
 
     Returns:
         {"score": int, "keywords": str, "reasoning": str}
@@ -88,8 +91,12 @@ def score_job(resume_text: str, job: dict) -> dict:
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
 
+    system_content = SCORE_PROMPT
+    if filter_req:
+        system_content += f"\n\nADDITIONAL REQUIREMENT: {filter_req}\nRETURN A SCORE OF 0 IF THE ADDITIONAL REQUIREMENT IS NOT FULFILLED."
+
     messages = [
-        {"role": "system", "content": SCORE_PROMPT},
+        {"role": "system", "content": system_content},
         {"role": "user", "content": f"RESUME:\n{resume_text}\n\n---\n\nJOB POSTING:\n{job_text}"},
     ]
 
@@ -115,6 +122,9 @@ def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1) -> dict
     workers = max(1, workers)
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
+    from applypilot.config import load_search_config
+    search_cfg = load_search_config()
+    filter_req = search_cfg.get("requirement", "")
 
     if rescore:
         query = "SELECT * FROM jobs WHERE full_description IS NOT NULL"
@@ -140,7 +150,7 @@ def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1) -> dict
     now = datetime.now(timezone.utc).isoformat()
 
     def _score_one(job: dict) -> dict:
-        result = score_job(resume_text, job)
+        result = score_job(resume_text, job, filter_req)
         return {
             "url": job["url"],
             "title": job.get("title", "?"),

@@ -79,7 +79,7 @@ Paragraph 1 (2-3 sentences): Open with a specific thing I built that solves thei
 
 Paragraph 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to the job. Use numbers. {projects_hint}{metrics_hint}
 
-Paragraph 3 (2-3 sentences): Link one specific thing ab out the company from the job description that would make me an great fit. Then close with something like: I would love for the opportunity to  discuss how my experience can contribute to your team. Looking forward to connect.
+Paragraph 3 (2-3 sentences): Link one specific thing about the company from the job description that would make me a great fit. Then close with something like: I would love for the opportunity to  discuss how my experience can contribute to your team. Looking forward to connect.
 
 Banned Punctuation: No em dashes (—) or en dashes (–). Use commas or periods. 
 

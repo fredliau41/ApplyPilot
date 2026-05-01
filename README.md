@@ -55,6 +55,7 @@ Runs all 6 stages, from job discovery to autonomous application submission. This
 Runs stages 1-5: discovers jobs, scores them, tailors your resume, generates cover letters. You submit applications manually with the AI-prepared materials.
 
 ---
+  Stages:     discover -> enrich -> score -> tailor -> cover -> pdf
 
 ## The Pipeline
 
